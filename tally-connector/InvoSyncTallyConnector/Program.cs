@@ -1,5 +1,5 @@
+using System.Text.Json;
 using InvoSync.TallyConnector.Services;
-using InvoSync.TallyConnector.Models;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddSingleton<QueueManager>();
@@ -23,4 +23,33 @@ builder.Services.AddHttpClient("Tally", c =>
 builder.Services.AddHostedService<PollingService>();
 
 var host = builder.Build();
-await host.RunAsync();
+var cts = new CancellationTokenSource();
+_ = host.RunAsync(cts.Token);
+
+// System tray icon — visible desktop presence
+using var icon = new NotifyIcon
+{
+    Icon = SystemIcons.Application,
+    Text = "InvoSync Tally Connector",
+    Visible = true,
+    ContextMenuStrip = new ContextMenuStrip()
+};
+icon.ContextMenuStrip.Items.Add("Status: Running", null, (s, e) =>
+{
+    var http = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient("Tally");
+    try
+    {
+        var ping = http.PostAsync("", new StringContent(
+            "<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Company</TYPE><ID>List of Companies</ID></HEADER><BODY><DESC></DESC></BODY></ENVELOPE>",
+            System.Text.Encoding.UTF8, "text/xml"),
+            cts.Token);
+        bool ok = ping.Wait(5000) && ping.Result.IsSuccessStatusCode;
+        icon.ShowBalloonTip(3000, "InvoSync Connector", ok ? "Tally Prime: Connected" : "Tally Prime: Offline", ToolTipIcon.Info);
+    }
+    catch { icon.ShowBalloonTip(3000, "InvoSync Connector", "Tally Prime: Unreachable", ToolTipIcon.Warning); }
+});
+icon.ContextMenuStrip.Items.Add(new ToolStripSeparator());
+icon.ContextMenuStrip.Items.Add("Exit", null, (s, e) => { cts.Cancel(); Application.Exit(); });
+
+Application.Run();
+cts.Cancel();
