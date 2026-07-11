@@ -34,40 +34,25 @@ public class PollingService : BackgroundService
     {
         _log.LogInformation("PollingService started (interval={Interval}s)", _intervalSec);
 
-        // Startup diagnostic: immediate Tally port 9000 check
-        bool tallyOnline = false;
-        try
-        {
-            tallyOnline = await _companySyncer.RunStartupDiagnosticCheckAsync(ct);
-            _log.LogInformation("Startup diagnostic: Tally Prime is {State}", tallyOnline ? "ONLINE" : "OFFLINE");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _log.LogWarning("Startup diagnostic threw: {Message}", ex.Message);
-        }
-
-        // Report connector liveness to backend immediately (even if Tally is offline)
-        try
-        {
-            await _companySyncer.ReportConnectorAliveAsync(tallyOnline, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException) { }
+        // Startup self-test
+        await RunStartupSelfTestAsync(ct);
 
         while (!ct.IsCancellationRequested)
         {
             _tick++;
             try
             {
+                // Periodic Tally liveness checks
                 if (_tick == 1 || _tick % 20 == 0)
                 {
                     await _companySyncer.SyncOpenCompaniesAsync(ct);
-                    // Re-run diagnostic on company sync tick
                     bool reachable = await _companySyncer.RunStartupDiagnosticCheckAsync(ct);
                     await _companySyncer.ReportConnectorAliveAsync(reachable, ct);
                 }
                 if (_tick == 2 || _tick % 20 == 0)
                     await _ledgerSyncer.SyncLedgerListAsync(ct);
 
+                // Fetch pending invoices from backend
                 var client = _httpFactory.CreateClient("InvoSync");
                 var resp = await client.GetAsync("/api/v3/sync/pending", ct);
 
@@ -95,27 +80,17 @@ public class PollingService : BackgroundService
                         continue;
                     }
 
-                    _log.LogInformation("Pushing invoice #{Id} ({Num}, type={Type}) to Tally",
-                        inv.DisplayId, inv.InvoiceNumber ?? "?", inv.VoucherType ?? "?");
-
-                    var result = await _pusher.PushAsync(inv.XmlContent, ct);
-
-                    if (result.Success)
+                    // Enqueue for processing with retry
+                    _queue.Enqueue(new TallyImportJob
                     {
-                        _log.LogInformation("Tally accepted invoice #{Id}", inv.DisplayId);
-                        var confirm = await client.PostAsync($"/api/v3/sync/confirm/{inv.DisplayId}", null, ct);
-                        if (!confirm.IsSuccessStatusCode)
-                            _log.LogWarning("Confirm #{Id} returned {Status}", inv.DisplayId, confirm.StatusCode);
-                    }
-                    else
-                    {
-                        _log.LogWarning("Tally rejected invoice #{Id}: {Error}", inv.DisplayId, result.ErrorLine);
-                        var errPayload = JsonContent.Create(new { error = result.ErrorLine ?? "Unknown" });
-                        var errResp = await client.PostAsync($"/api/v3/sync/error/{inv.DisplayId}", errPayload, ct);
-                        if (!errResp.IsSuccessStatusCode)
-                            _log.LogWarning("Error-report #{Id} returned {Status}", inv.DisplayId, errResp.StatusCode);
-                    }
+                        DisplayId = inv.DisplayId,
+                        XmlContent = inv.XmlContent,
+                        MaxRetries = 3,
+                    });
                 }
+
+                // Process queue (including retries from previous cycles)
+                await ProcessQueueAsync(ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -124,5 +99,106 @@ public class PollingService : BackgroundService
 
             await Task.Delay(TimeSpan.FromSeconds(_intervalSec), ct);
         }
+    }
+
+    private async Task RunStartupSelfTestAsync(CancellationToken ct)
+    {
+        _log.LogInformation("=== STARTUP SELF-TEST ===");
+
+        // 1. Check config
+        var cfgOk = !string.IsNullOrEmpty(_httpFactory.CreateClient("InvoSync").BaseAddress?.ToString());
+        _log.LogInformation("[CONFIG] InvoSync API URL: {Url}", cfgOk ? _httpFactory.CreateClient("InvoSync").BaseAddress : "MISSING");
+
+        // 2. Ping backend
+        try
+        {
+            var invosync = _httpFactory.CreateClient("InvoSync");
+            var ping = await invosync.GetAsync("/api/v3/tally/status", ct);
+            _log.LogInformation("[BACKEND] Ping {Status} ({Code})", ping.IsSuccessStatusCode ? "OK" : "FAIL", ping.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError("[BACKEND] Ping FAILED — {Message}", ex.Message);
+        }
+
+        // 3. Ping Tally port 9000
+        bool tallyOnline = false;
+        try
+        {
+            tallyOnline = await _companySyncer.RunStartupDiagnosticCheckAsync(ct);
+            _log.LogInformation("[TALLY] Port 9000 diagnostic: {State}", tallyOnline ? "ONLINE" : "OFFLINE");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning("[TALLY] Diagnostic threw: {Message}", ex.Message);
+        }
+
+        // 4. Report liveness
+        try
+        {
+            await _companySyncer.ReportConnectorAliveAsync(tallyOnline, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { }
+
+        _log.LogInformation("=== SELF-TEST COMPLETE ===");
+    }
+
+    private async Task ProcessQueueAsync(CancellationToken ct)
+    {
+        while (_queue.Pending > 0 && !ct.IsCancellationRequested)
+        {
+            var job = await _queue.DequeueAsync(ct);
+            if (job == null) break;
+
+            var client = _httpFactory.CreateClient("InvoSync");
+            _log.LogInformation("Pushing invoice #{Id} to Tally (attempt {N}/{M})",
+                job.DisplayId, job.RetryCount + 1, job.MaxRetries);
+
+            var result = await _pusher.PushAsync(job.XmlContent, ct, maxRetries: 3);
+
+            if (result.Success)
+            {
+                _log.LogInformation("Tally accepted invoice #{Id}", job.DisplayId);
+                await ConfirmSuccessAsync(client, job.DisplayId, ct);
+            }
+            else
+            {
+                _log.LogWarning("Tally rejected invoice #{Id}: {Error}", job.DisplayId, result.ErrorLine);
+                job.RetryCount++;
+                if (job.RetryCount >= job.MaxRetries)
+                {
+                    _log.LogError("Invoice #{Id} failed after {N} retries — reporting to backend", job.DisplayId, job.MaxRetries);
+                    await ReportErrorAsync(client, job.DisplayId, result.ErrorLine ?? "Max retries", ct);
+                }
+                else
+                {
+                    _log.LogWarning("Requeueing invoice #{Id} (retry {N}/{M})", job.DisplayId, job.RetryCount, job.MaxRetries);
+                    _queue.Enqueue(job);
+                }
+            }
+        }
+    }
+
+    private async Task ConfirmSuccessAsync(HttpClient client, int displayId, CancellationToken ct)
+    {
+        try
+        {
+            var confirm = await client.PostAsync($"/api/v3/sync/confirm/{displayId}", null, ct);
+            if (!confirm.IsSuccessStatusCode)
+                _log.LogWarning("Confirm #{Id} returned {Status}", displayId, confirm.StatusCode);
+        }
+        catch (Exception ex) { _log.LogWarning("Confirm #{Id} failed: {Message}", displayId, ex.Message); }
+    }
+
+    private async Task ReportErrorAsync(HttpClient client, int displayId, string error, CancellationToken ct)
+    {
+        try
+        {
+            var payload = JsonContent.Create(new { error });
+            var resp = await client.PostAsync($"/api/v3/sync/error/{displayId}", payload, ct);
+            if (!resp.IsSuccessStatusCode)
+                _log.LogWarning("Error-report #{Id} returned {Status}", displayId, resp.StatusCode);
+        }
+        catch (Exception ex) { _log.LogWarning("Error-report #{Id} failed: {Message}", displayId, ex.Message); }
     }
 }

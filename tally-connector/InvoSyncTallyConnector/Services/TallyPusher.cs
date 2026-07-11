@@ -21,41 +21,53 @@ public partial class TallyPusher
         _log = log;
     }
 
-    public async Task<TallyImportResult> PushAsync(string xml, CancellationToken ct)
+    /// <summary>
+    /// Pushes XML to Tally with retry (exponential backoff: 5s, 15s, 45s).
+    /// Returns the result of the last attempt.
+    /// </summary>
+    public async Task<TallyImportResult> PushAsync(string xml, CancellationToken ct, int maxRetries = 3)
     {
-        // Strip XML declaration — Tally's parser doesn't handle it
         var cleanXml = _xmlDecl.Replace(xml, "").Trim();
-
-        // The backend already returns fully-formed <ENVELOPE> block(s).
-        // Tally accepts one or more concatenated <ENVELOPE> blocks in a single POST.
-        // Do NOT wrap in another <ENVELOPE>.
         var http = _httpFactory.CreateClient("Tally");
-        var content = new StringContent(cleanXml, Encoding.UTF8, "text/xml");
 
-        try
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            var resp = await http.PostAsync("", content, ct);
-            var body = await resp.Content.ReadAsStringAsync(ct);
-
-            if (!resp.IsSuccessStatusCode)
+            var content = new StringContent(cleanXml, Encoding.UTF8, "text/xml");
+            try
             {
-                _log.LogWarning("Tally returned HTTP {Status}: {Body}", resp.StatusCode, body[..Math.Min(body.Length, 500)]);
-                return new TallyImportResult { Success = false, ErrorLine = $"HTTP {resp.StatusCode}" };
+                var resp = await http.PostAsync("", content, ct);
+                var body = await resp.Content.ReadAsStringAsync(ct);
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    _log.LogWarning("Tally returned HTTP {Status} (attempt {A}/{M})", resp.StatusCode, attempt, maxRetries);
+                    if (attempt < maxRetries) { await Backoff(attempt, ct); continue; }
+                    return new TallyImportResult { Success = false, ErrorLine = $"HTTP {resp.StatusCode}" };
+                }
+
+                var error = ParseErrorLine(body);
+                if (error == null)
+                    return new TallyImportResult { Success = true, RawResponse = body };
+
+                _log.LogWarning("Tally LINEERROR (attempt {A}/{M}): {Error}", attempt, maxRetries, error);
+                if (attempt < maxRetries) { await Backoff(attempt, ct); continue; }
+                return new TallyImportResult { Success = false, ErrorLine = error, RawResponse = body };
             }
-
-            var error = ParseErrorLine(body);
-            return new TallyImportResult
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                Success = error == null,
-                ErrorLine = error,
-                RawResponse = body,
-            };
+                _log.LogError(ex, "Tally push failed (attempt {A}/{M})", attempt, maxRetries);
+                if (attempt < maxRetries) { await Backoff(attempt, ct); continue; }
+                return new TallyImportResult { Success = false, ErrorLine = ex.Message };
+            }
         }
-        catch (Exception ex)
-        {
-            _log.LogError(ex, "Tally push failed — is Tally Prime running on port 9000?");
-            return new TallyImportResult { Success = false, ErrorLine = ex.Message };
-        }
+
+        return new TallyImportResult { Success = false, ErrorLine = "Max retries exceeded" };
+    }
+
+    private static async Task Backoff(int attempt, CancellationToken ct)
+    {
+        var delay = TimeSpan.FromSeconds(Math.Pow(3, attempt - 1) * 5); // 5s, 15s, 45s
+        await Task.Delay(delay, ct);
     }
 
     private static string? ParseErrorLine(string xml)
