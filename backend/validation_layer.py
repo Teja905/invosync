@@ -5,12 +5,16 @@ from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
+from company_config import CompanyConfig
+from ledger_mapping import LedgerMappingEngine
 from schemas import (
     StandardizedInvoice, VoucherType, GSTType, DocumentClass,
     LineItem, TaxEntry, ALLOWED_GST_SLABS,
 )
 from gst_engine import validate_gstin, determine_gst_type, validate_tax_structure
 from voucher_classifier import classify_document_detailed, classify_voucher_type
+
+_config = CompanyConfig()
 
 # Checks that block XML generation even with force=true.
 # Missing vendor name / total amount creates broken vouchers.
@@ -410,12 +414,10 @@ def _check_voucher_type(inv: StandardizedInvoice, result: ValidationResult):
 
 
 def _check_ledger_fallback(inv: StandardizedInvoice, result: ValidationResult):
-    from company_config import CompanyConfig
-    config = CompanyConfig()
     for item in inv.line_items:
         if not item.description:
             continue
-        ledger = config.get_expense_ledger(item.description)
+        ledger = _config.get_expense_ledger(item.description)
         if ledger == "Office Expenses":
             result.add_warning(
                 f"Ledger fallback: '{item.description}' didn't match known patterns → using Office Expenses"
@@ -442,10 +444,7 @@ def _check_expense_classification(inv: StandardizedInvoice, result: ValidationRe
 
 
 def _list_referenced_ledgers(inv: StandardizedInvoice, result: ValidationResult):
-    from ledger_mapping import LedgerMappingEngine
-    from company_config import CompanyConfig
-    config = CompanyConfig()
-    engine = LedgerMappingEngine(config)
+    engine = LedgerMappingEngine(_config)
     ledgers: set[str] = set()
     for item in inv.line_items:
         if item.is_service:
@@ -454,15 +453,15 @@ def _list_referenced_ledgers(inv: StandardizedInvoice, result: ValidationResult)
             ledgers.add(engine.map_purchase_ledger(item.description))
     if inv.cess_amount > 0:
         is_input = inv.voucher_type in (VoucherType.PURCHASE, VoucherType.JOURNAL, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE)
-        ledgers.add(config.get_cess_ledger(is_input))
+        ledgers.add(_config.get_cess_ledger(is_input))
     if inv.freight > 0:
-        ledgers.add(config.get_freight_ledger())
+        ledgers.add(_config.get_freight_ledger())
     if inv.tds_amount > 0:
-        ledgers.add(config.get_tds_ledger())
+        ledgers.add(_config.get_tds_ledger())
     if inv.round_off != 0:
-        ledgers.add(config.get_round_off_ledger())
+        ledgers.add(_config.get_round_off_ledger())
     if inv.voucher_type in (VoucherType.PAYMENT, VoucherType.RECEIPT):
-        ledgers.add(config.get_bank_ledger())
+        ledgers.add(_config.get_bank_ledger())
     if inv.voucher_type in (VoucherType.PURCHASE, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE):
         ledgers.add(engine.map_purchase_ledger())
     if inv.voucher_type == VoucherType.SALES:
@@ -472,7 +471,7 @@ def _list_referenced_ledgers(inv: StandardizedInvoice, result: ValidationResult)
             VoucherType.PURCHASE, VoucherType.JOURNAL,
             VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE,
         )
-        ledgers.add(config.get_gst_ledger(tax.type, tax.rate, is_input))
+        ledgers.add(_config.get_gst_ledger(tax.type, tax.rate, is_input))
     for ledger in sorted(ledgers):
         result.add_warning(f"Ledger '{ledger}' will be referenced in XML")
 

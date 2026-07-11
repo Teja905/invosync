@@ -169,11 +169,11 @@ class TallyXmlGenerator:
         try:
             from validation_layer import validate_invoice_for_xml
             val_result = validate_invoice_for_xml(inv)
-            if not val_result.get("is_valid"):
+            if not val_result.passed:
                 warnings.append({
                     "type": "validation",
                     "severity": "high",
-                    "message": f"XML validation found issues: {'; '.join(val_result.get('errors', [])[:3])}",
+                    "message": f"XML validation found issues: {'; '.join(val_result.errors[:3])}",
                 })
         except Exception:
             pass

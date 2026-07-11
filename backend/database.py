@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import AutoReconnect, ConnectionFailure
+from bson.objectid import ObjectId
 
 
 def calculate_file_hash(file_bytes: bytes) -> str:
@@ -229,7 +230,6 @@ async def create_banking_rule(user_id: str, keyword: str, voucher_type: str, tar
 async def delete_banking_rule(rule_id: str, user_id: str):
     if banking_rules is None:
         return
-    from bson.objectid import ObjectId
     await execute_db_write_with_retry(
         banking_rules.delete_one, {"_id": ObjectId(rule_id), "user_id": user_id}
     )
