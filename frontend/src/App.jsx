@@ -1416,7 +1416,7 @@ function SettingsPage() {
 }
 
 function TallyConnectorPanel() {
-  const downloadUrl = "/downloads/InvoSyncTallyConnector.exe";
+  const downloadUrl = "https://github.com/Teja905/invosync/releases/latest/download/InvoSyncTallyConnector.exe";
   return (
     <div className="glass-card p-6 max-w-2xl">
       <div className="flex items-start gap-4">
