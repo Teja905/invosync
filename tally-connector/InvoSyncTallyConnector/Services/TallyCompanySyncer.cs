@@ -14,11 +14,11 @@ public class TallyCompanySyncer
         _log = log;
     }
 
-    /// <summary>Pings Tally port 9000 with a harmless list-companies request.</summary>
+    /// <summary>Pings Tally port 9000 with a harmless import request (works on all Tally versions).</summary>
     public async Task<bool> RunStartupDiagnosticCheckAsync(CancellationToken ct)
     {
         string pingXml = @"<ENVELOPE>
-<HEADER><VERSION>1</VERSION><TALLYREQUEST>Export Data</TALLYREQUEST><TYPE>Company</TYPE><ID>List of Companies</ID></HEADER>
+<HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>All Masters</ID></HEADER>
 <BODY><DESC></DESC></BODY>
 </ENVELOPE>";
 
@@ -33,13 +33,15 @@ public class TallyCompanySyncer
             if (response.IsSuccessStatusCode)
             {
                 var body = await response.Content.ReadAsStringAsync(ct);
-                if (body.Contains("<ENVELOPE>"))
+                if (body.Contains("<ENVELOPE>") && !body.Contains("Unknown Request"))
                 {
                     _log.LogInformation("Tally Prime port 9000 diagnostic: CONNECTED");
                     return true;
                 }
+                _log.LogWarning("Tally Prime diagnostic: unexpected response — {Body}", body[..Math.Min(body.Length, 200)]);
+                return false;
             }
-            _log.LogWarning("Tally Prime port 9000 diagnostic: unexpected response");
+            _log.LogWarning("Tally Prime diagnostic: HTTP {Status}", response.StatusCode);
             return false;
         }
         catch (OperationCanceledException)
@@ -81,7 +83,7 @@ public class TallyCompanySyncer
     {
         var tally = _httpFactory.CreateClient("Tally");
         var requestXml = @"<ENVELOPE>
-<HEADER><VERSION>1</VERSION><TALLYREQUEST>Export Data</TALLYREQUEST><TYPE>Company</TYPE><ID>List of Companies</ID></HEADER>
+<HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Company</TYPE><ID>List of Companies</ID></HEADER>
 <BODY><DESC><STATICVARIABLES></STATICVARIABLES></DESC></BODY>
 </ENVELOPE>";
 

@@ -84,9 +84,9 @@ icon.ContextMenuStrip.Items.Add("Ping Tally", null, (s, e) =>
     var http = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient("Tally");
     try
     {
-        var ping = http.PostAsync("", new StringContent(
-            "<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Company</TYPE><ID>List of Companies</ID></HEADER><BODY><DESC></DESC></BODY></ENVELOPE>",
-            Encoding.UTF8, "text/xml"), cts.Token);
+            var ping = http.PostAsync("", new StringContent(
+                "<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>All Masters</ID></HEADER><BODY><DESC></DESC></BODY></ENVELOPE>",
+                Encoding.UTF8, "text/xml"), cts.Token);
         bool ok = ping.Wait(5000) && ping.Result.IsSuccessStatusCode;
         icon.ShowBalloonTip(3000, "InvoSync Connector", ok ? "Tally Prime: Connected" : "Tally Prime: Offline", ToolTipIcon.Info);
     }
@@ -123,7 +123,7 @@ _ = Task.Run(async () =>
         {
             var tally = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient("Tally");
             var ping = new StringContent(
-                "<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Company</TYPE><ID>List of Companies</ID></HEADER><BODY><DESC></DESC></BODY></ENVELOPE>",
+                "<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>All Masters</ID></HEADER><BODY><DESC></DESC></BODY></ENVELOPE>",
                 Encoding.UTF8, "text/xml");
             var resp = await tally.PostAsync("", ping, cts.Token);
             bool connected = resp.IsSuccessStatusCode;
