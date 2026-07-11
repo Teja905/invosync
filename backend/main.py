@@ -98,7 +98,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _ALLOWED_ORIGINS = [
-    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000,https://invosync.vercel.app").split(",") if o.strip()
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000,https://invosync-wheat.vercel.app,https://invosync.vercel.app").split(",") if o.strip()
 ]
 app.add_middleware(
     CORSMiddleware,

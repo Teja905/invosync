@@ -3,7 +3,9 @@ import { useDropzone } from "react-dropzone";
 import { useAuth } from "./auth";
 import gsap from "gsap";
 
-const BACKEND = import.meta.env.VITE_API_URL || "";
+const BACKEND = import.meta.env.VITE_API_URL || (
+  window.location.hostname === "localhost" ? "" : "https://invosync-backend-yjfa.onrender.com"
+);
 
 const COMMON_LEDGERS = [
   "Purchase", "Sales", "Purchase Accounts", "Sales Accounts",

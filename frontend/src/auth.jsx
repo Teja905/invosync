@@ -1,6 +1,8 @@
 import { createContext, useContext } from "react";
 
-const BACKEND = import.meta.env.VITE_API_URL || "";
+const BACKEND = import.meta.env.VITE_API_URL || (
+  window.location.hostname === "localhost" ? "" : "https://invosync-backend-yjfa.onrender.com"
+);
 const AuthContext = createContext(null);
 
 const DEFAULT_USER = {
