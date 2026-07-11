@@ -1,0 +1,30 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.320.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tally-connector", "tally-connector", "{33268B08-2FCE-F623-F3AB-3E42F479660C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InvoSyncTallyConnector", "InvoSyncTallyConnector\InvoSyncTallyConnector.csproj", "{AE9310DD-91D9-DD18-8CDA-F01E6C0FDF5E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AE9310DD-91D9-DD18-8CDA-F01E6C0FDF5E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AE9310DD-91D9-DD18-8CDA-F01E6C0FDF5E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AE9310DD-91D9-DD18-8CDA-F01E6C0FDF5E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AE9310DD-91D9-DD18-8CDA-F01E6C0FDF5E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{AE9310DD-91D9-DD18-8CDA-F01E6C0FDF5E} = {33268B08-2FCE-F623-F3AB-3E42F479660C}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {C473493E-D305-4B54-827D-F99BD809190B}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,10 @@
+[Unit]
+Description=InvoSync MongoDB backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/invosync/scripts/backup_schedule.py --quiet
+User=root
+Group=root

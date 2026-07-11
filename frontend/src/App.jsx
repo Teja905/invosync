@@ -1,0 +1,1643 @@
+import React, { useState, useCallback, useEffect, useRef } from "react";
+import { useDropzone } from "react-dropzone";
+import { useAuth } from "./auth";
+
+const BACKEND = import.meta.env.VITE_API_URL || "";
+
+const COMMON_LEDGERS = [
+  "Purchase", "Sales", "Purchase Accounts", "Sales Accounts",
+  "Professional Charges", "Office Expenses", "Rent Expenses",
+  "Electricity Expenses", "Telephone Expenses", "Travel Expenses",
+  "Food Expenses", "Fixed Assets", "Freight Expenses", "Bank Charges",
+  "Interest Expenses", "Insurance Expenses", "Repairs & Maintenance",
+  "Salary Expenses", "Software Expenses", "Legal Expenses",
+  "Audit Expenses", "Advertisement Expenses", "Commission Expenses",
+  "Printing & Stationery", "Postage & Courier", "Carriage Inwards",
+  "Carriage Outwards", "Packing Expenses", "Labour Charges",
+  "Job Work Charges", "Consulting Fees", "Management Fees",
+  "Royalty Expenses", "Training Expenses", "Recruitment Expenses",
+  "Membership & Subscription", "Donations", "Charity Expenses",
+  "Miscellaneous Expenses", "Suspense", "Round Off",
+  "TDS Payable", "GST Input CGST", "GST Input SGST", "GST Input IGST",
+  "GST Output CGST", "GST Output SGST", "GST Output IGST",
+  "TCS Payable", "Wages Payable", "Salary Payable",
+  "Interest Payable", "Rent Payable", "Electricity Payable",
+  "Outstanding Expenses", "Prepaid Expenses",
+  "Capital Account", "Drawings", "Bank OD", "Cash in Hand",
+  "Bank (HDFC)", "Bank (ICICI)", "Bank (SBI)", "Bank (Axis)",
+  "Loans & Advances", "Security Deposits", "Advances to Suppliers",
+  "Sundry Debtors", "Sundry Creditors",
+  "Stock-in-Hand", "Opening Stock", "Closing Stock",
+  "Purchase Returns", "Sales Returns", "Discount Allowed",
+  "Discount Received", "Bad Debts", "Provision for Bad Debts",
+  "Investments", "Interest Income", "Other Income",
+  "Dividend Income", "Rent Income", "Commission Income",
+];
+
+function safeJson(r) {
+  if (!r.ok) return Promise.reject(new Error(r.status + " " + r.statusText));
+  return r.json().catch(() => ({}));
+}
+
+function Field({ label, error, children, optional }) {
+  return (
+    <div className="animate-fadeIn">
+      <label className="block text-sm font-medium text-gray-300 mb-1.5">
+        {label}
+        {optional && <span className="text-gray-500 font-normal ml-1">(optional)</span>}
+      </label>
+      {children}
+      {error && <p className="text-red-400 text-xs mt-1.5 flex items-center gap-1"><span>&#9888;</span>{error}</p>}
+    </div>
+  );
+}
+
+function NavBar({ active, onChange, tallyStatus }) {
+  const tabs = [
+    { key: "extract", label: "Extract" },
+    { key: "clients", label: "Clients" },
+    { key: "dashboard", label: "Dashboard" },
+    // { key: "banking", label: "Banking" },  // V2 — bank statement automation
+    { key: "settings", label: "Settings" },
+  ];
+
+  return (
+    <div className="glass rounded-2xl px-5 py-3 mb-6 flex items-center justify-between animate-slideUp">
+      <div className="flex gap-1">
+        {tabs.map((t) => (
+          <button key={t.key} onClick={() => onChange(t.key)}
+            className={`px-4 py-2 text-sm font-medium rounded-xl transition-all duration-300 ${
+              active === t.key
+                ? "bg-gradient-to-r from-indigo-500/20 to-purple-500/20 text-white shadow-lg shadow-indigo-500/10 border border-indigo-400/20"
+                : "text-gray-400 hover:text-gray-200 hover:bg-white/5"
+            }`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 text-xs max-w-[320px]">
+        <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${
+          tallyStatus?.connected ? "bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]" :
+          tallyStatus?.connector_online ? "bg-yellow-400 shadow-[0_0_6px_rgba(250,204,21,0.5)]" :
+          "bg-red-400/60"
+        }`} />
+        <span className="text-gray-500 leading-tight">
+          {tallyStatus?.connected ? `Tally: ${tallyStatus.company}` :
+           tallyStatus?.connector_online ? "Tally not detected — open Tally Prime, set F1→Settings→Connectivity→Port 9000" :
+           "Connector offline — run InvoSync.exe on this PC"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// AUTH DISABLED - LoginPage removed
+
+function ClientPage({ refreshKey }) {
+  const { getAuthHeaders } = useAuth();
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [companyName, setCompanyName] = useState("");
+  const [clientName, setClientName] = useState("");
+  const [gstin, setGstin] = useState("");
+  const [editingClient, setEditingClient] = useState(null);
+  const [editCompanyName, setEditCompanyName] = useState("");
+  const [editClientName, setEditClientName] = useState("");
+  const [editGstin, setEditGstin] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`${BACKEND}/clients`, { headers: getAuthHeaders() })
+      .then((r) => r.json()).then(setClients).catch(() => {}).finally(() => setLoading(false));
+  }, [refreshKey]);
+
+  async function addClient() {
+    if (!companyName || !clientName) return;
+    try {
+      const r = await fetch(`${BACKEND}/clients`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ company_name: companyName, client_name: clientName, gstin }),
+      });
+      if (!r.ok) { const err = await r.text(); alert("Failed: " + err); return; }
+      setCompanyName(""); setClientName(""); setGstin(""); setShowForm(false);
+      const res = await fetch(`${BACKEND}/clients`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error(await res.text());
+      setClients(await res.json());
+    } catch (e) { alert("Failed: " + e.message); }
+  }
+
+  function startEdit(c) {
+    setEditingClient(c);
+    setEditCompanyName(c.company_name);
+    setEditClientName(c.client_name);
+    setEditGstin(c.gstin || "");
+  }
+
+  function cancelEdit() {
+    setEditingClient(null);
+    setEditCompanyName(""); setEditClientName(""); setEditGstin("");
+  }
+
+  async function saveEdit() {
+    if (!editCompanyName || !editClientName || !editingClient) return;
+    try {
+      await fetch(`${BACKEND}/clients/${editingClient.client_id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ company_name: editCompanyName, client_name: editClientName, gstin: editGstin }),
+      });
+      cancelEdit();
+      const res = await fetch(`${BACKEND}/clients`, { headers: getAuthHeaders() });
+      setClients(await res.json());
+    } catch (e) { alert("Failed: " + e.message); }
+  }
+
+  async function deleteClient(id) {
+    if (!window.confirm("Delete this client and ALL their invoices?")) return;
+    try {
+      await fetch(`${BACKEND}/clients/${id}`, { method: "DELETE", headers: getAuthHeaders() });
+      setClients((prev) => prev.filter((c) => c.client_id !== id));
+    } catch (e) { alert("Failed: " + e.message); }
+  }
+
+  if (loading) return <div className="text-center py-20"><div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>;
+
+  return (
+    <div className="space-y-4 animate-fadeIn">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-bold gradient-text">Clients ({clients.length})</h2>
+        <button onClick={() => setShowForm(!showForm)} className="btn-primary text-sm px-4 py-2">
+          {showForm ? "Cancel" : "+ Add Client"}
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="glass-card p-5 space-y-4 animate-slideUp">
+          <h3 className="text-sm font-semibold text-gray-200">New Client</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Company Name *</label>
+              <input className="input w-full" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="e.g. ABC Traders" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Contact Person *</label>
+              <input className="input w-full" value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="e.g. Rajesh Kumar" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">GSTIN <span className="text-gray-600">(optional)</span></label>
+              <input className="input w-full" value={gstin} onChange={(e) => setGstin(e.target.value.toUpperCase())} placeholder="Leave blank if N/A" />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button onClick={() => setShowForm(false)} className="btn-secondary text-sm px-4 py-2">Cancel</button>
+            <button onClick={addClient} className="btn-primary text-sm px-4 py-2">Save Client</button>
+          </div>
+        </div>
+      )}
+
+      {editingClient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn" onClick={cancelEdit}>
+          <div className="glass-card p-5 space-y-4 w-full max-w-lg animate-slideUp" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-gray-200">Edit Client</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Company Name *</label>
+                <input className="input w-full" value={editCompanyName} onChange={(e) => setEditCompanyName(e.target.value)} placeholder="e.g. ABC Traders" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Contact Person *</label>
+                <input className="input w-full" value={editClientName} onChange={(e) => setEditClientName(e.target.value)} placeholder="e.g. Rajesh Kumar" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">GSTIN <span className="text-gray-600">(optional)</span></label>
+                <input className="input w-full" value={editGstin} onChange={(e) => setEditGstin(e.target.value.toUpperCase())} placeholder="Leave blank if N/A" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={cancelEdit} className="btn-secondary text-sm px-4 py-2">Cancel</button>
+              <button onClick={saveEdit} className="btn-primary text-sm px-4 py-2">Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {clients.length === 0 ? (
+        <div className="glass-card p-12 text-center">
+          <p className="text-gray-400 text-lg">No clients yet.</p>
+          <p className="text-gray-500 text-sm mt-2">Add your first client to start processing invoices.</p>
+        </div>
+      ) : (
+        <div className="glass-card overflow-hidden">
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-white/5 text-left text-xs text-gray-500 uppercase">
+              <th className="px-4 py-3.5 font-medium">Company</th>
+              <th className="px-4 py-3.5 font-medium">Contact</th>
+              <th className="px-4 py-3.5 font-medium">GSTIN</th>
+              <th className="px-4 py-3.5 font-medium text-center">Invoices</th>
+              <th className="px-4 py-3.5 font-medium text-right">Action</th>
+            </tr></thead>
+            <tbody className="divide-y divide-white/5">
+              {clients.map((c) => (
+                <tr key={c.client_id} className="table-row">
+                  <td className="px-4 py-3.5 font-medium text-gray-200">{c.company_name}</td>
+                  <td className="px-4 py-3.5 text-gray-300">{c.client_name}</td>
+                  <td className="px-4 py-3.5 font-mono text-xs text-gray-400">{c.gstin || <span className="text-gray-600">N/A</span>}</td>
+                  <td className="px-4 py-3.5 text-center text-gray-400">{c.invoice_count || 0}</td>
+                  <td className="px-4 py-3.5 text-right flex justify-end gap-2">
+                    <button onClick={() => startEdit(c)} className="text-xs text-indigo-400 hover:text-indigo-300">Edit</button>
+                    <button onClick={() => deleteClient(c.client_id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, setSelectedClient, ledgers, setLedgers, reviewConfirmed, setReviewConfirmed, reviewErrors, setReviewErrors }) {
+  const { user, getAuthHeaders } = useAuth();
+  const [extracting, setExtracting] = useState(false);
+  const [validated, setValidated] = useState(false);
+  const [errors, setErrors] = useState({});
+  const [success, setSuccess] = useState(false);
+  const [validation, setValidation] = useState(null);
+  const [dupWarning, setDupWarning] = useState(null);
+  const [clients, setClients] = useState([]);
+  const [mastersPreview, setMastersPreview] = useState(null);
+  const [showWarnings, setShowWarnings] = useState([]);
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [showValModal, setShowValModal] = useState(false);
+  const [valModalData, setValModalData] = useState(null);
+  const [tallyLedgers, setTallyLedgers] = useState([]);
+  const abortRef = useRef(null);
+  const imageUrl = currentId != null ? `${BACKEND}/invoices/${currentId}/image` : null;
+
+  useEffect(() => {
+    fetch(`${BACKEND}/clients`, { headers: getAuthHeaders() })
+      .then((r) => r.json()).then(setClients).catch(() => {});
+    fetch(`${BACKEND}/api/v3/sync/ledgers`, { headers: getAuthHeaders() })
+      .then((r) => r.json()).then((d) => setTallyLedgers(d.ledgers || [])).catch(() => {});
+  }, []);
+
+  const companyGstin = user?.company_gstin || "";
+  const companyName = user?.company_name || "";
+  const showForm = form.line_items.length > 0 || success;
+
+  const onDrop = useCallback(async (acceptedFiles) => {
+    const file = acceptedFiles[0];
+    if (!file) return;
+    if (!selectedClient) { alert("Select a client first"); return; }
+    setExtracting(true); setValidated(false); setErrors({}); setSuccess(false); setValidation(null); setDupWarning(null);
+    setCurrentId(null);
+    setForm((p) => ({ ...p, line_items: [] }));
+
+    abortRef.current = new AbortController();
+    const timer = setTimeout(() => abortRef.current.abort(), 120000);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await fetch(`${BACKEND}/extract?client_id=${selectedClient}`, {
+        method: "POST", body: fd, signal: abortRef.current.signal,
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (body.error === "company_profile_required") {
+          alert("Set up your company profile first (Company Name, GSTIN, State) in Settings.");
+          return;
+        }
+        if (res.status === 409 && body.duplicate) {
+          setDupWarning(`Duplicate file (existing ID: ${body.existing_id}).`);
+          const d = body;
+          setCurrentId(d._id || null);
+          setForm({ gstin: "", invoice_number: "", date: "", total_amount: "", vendor_name: "", vendor_address: "", buyer_gstin: companyGstin || "", buyer_name: companyName || "", voucher_type: "Purchase", confidence: null, line_items: [], _provider: "", _model: "" });
+          setSuccess(true);
+          return;
+        }
+        throw new Error(body.message || body.detail || `HTTP ${res.status}`);
+      }
+
+      const body = await res.json();
+
+      // 202 — queued for background extraction; poll until done
+      if (res.status === 202 && body.invoice_id) {
+        let pollCount = 0;
+        const poll = async (resolve, reject) => {
+          if (abortRef.current.signal.aborted) { reject(new Error("Cancelled")); return; }
+          pollCount++;
+          try {
+            const pr = await fetch(`${BACKEND}/extract/status/${body.invoice_id}`, { headers: getAuthHeaders() });
+            const ps = await pr.json();
+            if (ps.processing_state === "completed" || ps.status === "draft" || ps.status === "validated") {
+              // Fetch the completed invoice data via display_id or invoice_id
+              const fetchId = ps.display_id || body.invoice_id;
+              if (ps.display_id) {
+                const ir = await fetch(`${BACKEND}/invoices/${ps.display_id}`, { headers: getAuthHeaders() });
+                if (ir.ok) {
+                  const inv = await ir.json();
+                  const ext = inv.extracted || {};
+                  const items = Array.isArray(ext.line_items) ? ext.line_items : [];
+                  setCurrentId(ps.display_id);
+                  setForm({
+                    gstin: ext.gstin || "", invoice_number: ext.invoice_number || "", date: ext.date || "",
+                    total_amount: ext.total_amount != null ? String(ext.total_amount) : "",
+                    vendor_name: ext.vendor_name || "", vendor_address: ext.vendor_address || "",
+                    buyer_gstin: ext.buyer_gstin || companyGstin || "", buyer_name: ext.buyer_name || companyName || "",
+                    voucher_type: ext.voucher_type || "Purchase", confidence: ext.confidence ?? null,
+                    line_items: items, _provider: ext._provider || "", _model: ext._model || "",
+                    freight: ext.freight || 0, round_off: ext.round_off || 0, tds_amount: ext.tds_amount || 0,
+                  });
+                  setLedgers(items.map(() => ""));
+                  setReviewConfirmed(false);
+                  setReviewErrors(null);
+                  setValidation(inv.validation || ext.validation || null);
+                  if (inv.extracted?._duplicate_warning) setDupWarning(inv.extracted._duplicate_warning);
+                  setSuccess(true);
+                  resolve();
+                  return;
+                }
+              }
+              // Fallback: no display_id yet, try GET invoice by _id
+              setCurrentId(body.invoice_id);
+              setSuccess(true);
+              resolve();
+            } else if (ps.processing_state?.startsWith("failed") || ps.status === "extraction_failed") {
+              reject(new Error(ps.processing_state || "Extraction failed"));
+            } else if (pollCount > 60) {
+              reject(new Error("Extraction timed out after 2 minutes"));
+            } else {
+              setTimeout(() => poll(resolve, reject), 2000);
+            }
+          } catch (e) {
+            if (e.name !== "AbortError") setTimeout(() => poll(resolve, reject), 2000);
+            else reject(e);
+          }
+        };
+        await new Promise((resolve, reject) => poll(resolve, reject));
+      } else {
+        // Synchronous response (fallback / no DB)
+        const d = body;
+        setCurrentId(d._id || null);
+        const items = Array.isArray(d.line_items) ? d.line_items : [];
+        setForm({
+          gstin: d.gstin || "", invoice_number: d.invoice_number || "", date: d.date || "",
+          total_amount: d.total_amount != null ? String(d.total_amount) : "",
+          vendor_name: d.vendor_name || "", vendor_address: d.vendor_address || "",
+          buyer_gstin: d.buyer_gstin || companyGstin || "", buyer_name: d.buyer_name || companyName || "",
+          voucher_type: d.voucher_type || "Purchase", confidence: d.confidence ?? null, line_items: items,
+          _provider: d._provider || "", _model: d._model || "",
+        });
+        setLedgers(items.map(() => ""));
+        setReviewConfirmed(false);
+        setReviewErrors(null);
+        setValidation(d.validation || null);
+        if (d._duplicate_warning) setDupWarning(d._duplicate_warning);
+        setSuccess(true);
+      }
+    } catch (e) {
+      if (e.name !== "AbortError") setErrors({ _general: "Extraction failed: " + e.message });
+    } finally { clearTimeout(timer); setExtracting(false); }
+  }, [selectedClient, setForm, setCurrentId, companyGstin, companyName, getAuthHeaders]);
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop, accept: { "image/*": [".png", ".jpg", ".jpeg", ".webp"], "application/pdf": [".pdf"] }, maxFiles: 1, disabled: extracting,
+  });
+
+  function doValidate() {
+    const e = {};
+    if (form.gstin && !/^\d{2}[A-Z]{5}\d{4}[A-Z]{1}\d[Z]{1}[A-Z\d]{1}$/.test(form.gstin)) e.gstin = "Invalid format";
+    if (!form.invoice_number) e.invoice_number = "Required";
+    if (!form.date) e.date = "Required";
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(form.date) || isNaN(Date.parse(form.date))) e.date = "Use YYYY-MM-DD";
+    const amt = parseFloat(form.total_amount);
+    if (isNaN(amt) || amt <= 0) e.total_amount = "Must be positive";
+    if (!form.vendor_name) e.vendor_name = "Required";
+    if (form.line_items.length === 0) e.line_items = "At least one item";
+    form.line_items.forEach((item, i) => {
+      if (!item.description) e[`li_${i}_desc`] = `Item ${i+1}: description required`;
+      if (isNaN(parseFloat(item.quantity)) || parseFloat(item.quantity) <= 0) e[`li_${i}_qty`] = `Item ${i+1}: positive qty`;
+      if (isNaN(parseFloat(item.taxable_value)) || parseFloat(item.taxable_value) < 0) e[`li_${i}_tv`] = `Item ${i+1}: valid value`;
+    });
+    setErrors(e);
+    if (Object.keys(e).length === 0) setValidated(true);
+    return Object.keys(e).length === 0;
+  }
+
+  async function downloadXML(force = false) {
+    if (!force) { const valid = doValidate(); if (!valid && !window.confirm("Generate XML anyway?")) return; }
+    try {
+      const payload = {
+        ...form, total_amount: parseFloat(form.total_amount),
+        buyer_gstin: form.buyer_gstin || companyGstin || "",
+        buyer_name: form.buyer_name || companyName || "",
+        client_id: parseInt(selectedClient) || null,
+        line_items: form.line_items.map((item) => ({
+          ...item, quantity: parseFloat(item.quantity), rate: parseFloat(item.rate || 0),
+          taxable_value: parseFloat(item.taxable_value), tax_rate: parseFloat(item.tax_rate || 0),
+          cgst: item.cgst != null ? parseFloat(item.cgst) : null,
+          sgst: item.sgst != null ? parseFloat(item.sgst) : null,
+          igst: item.igst != null ? parseFloat(item.igst) : null,
+        })),
+      };
+      const url = currentId != null
+        ? `${BACKEND}/generate-xml/${currentId}?force=${force}`
+        : `${BACKEND}/generate-xml?force=${force}`;
+      const res = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(payload),
+      });
+      if (res.status === 422) {
+        const body = await res.json().catch(() => ({}));
+        setValModalData({
+          blocking: body.blocking_errors || [],
+          soft: body.soft_errors || [],
+          warnings: body.warnings || [],
+          message: body.message || "Validation produced warnings",
+        });
+        setShowValModal(true);
+        return;
+      }
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      const url2 = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url2; a.download = `voucher_${form.invoice_number || "output"}.xml`; a.click();
+      URL.revokeObjectURL(url2);
+    } catch (e) { setErrors({ _general: "XML generation failed: " + e.message }); }
+  }
+
+  async function previewMasters() {
+    if (!doValidate()) return;
+    setPreviewLoading(true);
+    setMastersPreview(null);
+    try {
+      const payload = {
+        ...form, total_amount: parseFloat(form.total_amount),
+        buyer_gstin: form.buyer_gstin || companyGstin || "",
+        buyer_name: form.buyer_name || companyName || "",
+        client_id: parseInt(selectedClient) || null,
+        line_items: form.line_items.map((item) => ({
+          ...item, quantity: parseFloat(item.quantity), rate: parseFloat(item.rate || 0),
+          taxable_value: parseFloat(item.taxable_value), tax_rate: parseFloat(item.tax_rate || 0),
+          cgst: item.cgst != null ? parseFloat(item.cgst) : null,
+          sgst: item.sgst != null ? parseFloat(item.sgst) : null,
+          igst: item.igst != null ? parseFloat(item.igst) : null,
+        })),
+      };
+      const res = await fetch(`${BACKEND}/preview-masters`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const body = await res.json();
+      setMastersPreview(body.masters || []);
+      setShowWarnings(body.warnings || []);
+      setShowPreview(true);
+    } catch (e) {
+      setErrors({ _general: "Preview failed: " + e.message });
+    }
+    setPreviewLoading(false);
+  }
+
+  async function doReviewConfirm() {
+    setReviewErrors(null);
+    const payload = {
+      ...form, total_amount: parseFloat(form.total_amount),
+      buyer_gstin: form.buyer_gstin || companyGstin || "",
+      buyer_name: form.buyer_name || companyName || "",
+      client_id: parseInt(selectedClient) || null,
+      freight: form.freight != null ? parseFloat(form.freight) : 0,
+      round_off: form.round_off != null ? parseFloat(form.round_off) : 0,
+      tds_amount: form.tds_amount != null ? parseFloat(form.tds_amount) : 0,
+      line_items: form.line_items.map((item) => ({
+        description: item.description, quantity: parseFloat(item.quantity),
+        rate: parseFloat(item.rate || 0), taxable_value: parseFloat(item.taxable_value),
+        tax_rate: parseFloat(item.tax_rate || 0),
+      })),
+      item_ledgers: ledgers,
+    };
+    try {
+      const res = await fetch(`${BACKEND}/api/v3/invoices/${currentId}/confirm-review`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setReviewConfirmed(true);
+        setValidated(true);
+        setReviewErrors(null);
+      } else {
+        setReviewErrors(body.errors || [body.message || "Review confirmation failed"]);
+      }
+    } catch (e) {
+      setReviewErrors(["Review failed: " + e.message]);
+    }
+  }
+
+  function resetForm() {
+    setForm({ gstin: "", invoice_number: "", date: "", total_amount: "", vendor_name: "", vendor_address: "", buyer_gstin: "", buyer_name: "", voucher_type: "Purchase", confidence: null, line_items: [], _provider: "", _model: "" });
+    setValidated(false); setErrors({}); setSuccess(false); setCurrentId(null); setValidation(null); setDupWarning(null);
+    setSelectedClient("");
+    setMastersPreview(null);
+    setShowPreview(false);
+    setShowWarnings([]);
+    setLedgers([]);
+    setReviewConfirmed(false);
+    setReviewErrors(null);
+  }
+
+  return (
+    <div className="space-y-5 animate-fadeIn">
+      <div className="glass rounded-xl px-4 py-3 flex items-center gap-3">
+        <label className="text-sm text-gray-300 whitespace-nowrap">Client:</label>
+        <select className="input flex-1" value={selectedClient} onChange={(e) => setSelectedClient(e.target.value)}>
+          <option value="">-- Select a client --</option>
+          {clients.map((c) => (
+            <option key={c.client_id} value={c.client_id}>{c.company_name} ({c.client_name})</option>
+          ))}
+        </select>
+        {clients.length === 0 && <span className="text-xs text-yellow-400">Add clients first</span>}
+      </div>
+
+      <div {...getRootProps()} className={`rounded-xl p-12 text-center cursor-pointer transition-all duration-300 border-2 border-dashed ${
+        isDragActive ? "border-indigo-400 dropzone-active scale-[1.01]" : "glass-card border-white/10 hover:border-white/20"
+      }`}>
+        <input {...getInputProps()} />
+        {extracting ? (
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+            <p className="text-gray-400">Extracting invoice data...</p>
+          </div>
+        ) : isDragActive ? (
+          <p className="text-lg font-medium text-indigo-300">Drop invoice here</p>
+        ) : (
+          <div>
+            <div className="text-4xl mb-3">{"\u{1F4C4}"}</div>
+            <p className="text-gray-300 font-medium">Drop invoice image or PDF here, or click to select</p>
+            <p className="text-xs text-gray-500 mt-1.5">Supports PNG, JPG, WebP</p>
+          </div>
+        )}
+      </div>
+
+      {errors._general && (
+        <div className="glass rounded-xl p-4 border border-red-500/20 flex items-start gap-3 animate-fadeIn">
+          <span className="text-red-400 mt-0.5">&#9888;</span>
+          <p className="text-sm text-red-300">{errors._general}</p>
+        </div>
+      )}
+
+      {dupWarning && (
+        <div className="glass rounded-xl p-4 border border-yellow-500/20 flex items-start gap-3 animate-fadeIn">
+          <span className="text-yellow-400 mt-0.5">&#9888;</span>
+          <p className="text-sm text-yellow-300">{typeof dupWarning === "string" ? dupWarning : dupWarning.message}</p>
+        </div>
+      )}
+
+      {validation && <ValidationSummary validation={validation} />}
+
+      {showForm && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 animate-slideUp" style={{ animationDelay: "0.1s" }}>
+          <div className="space-y-4">
+            <div className="glass-card p-4">
+              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-3">Invoice Document</h3>
+              {imageUrl ? (
+                <div className="rounded-lg overflow-hidden bg-black/20">
+                  <img src={imageUrl} alt="Invoice" className="w-full h-auto object-contain max-h-[600px]" onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
+                  <div className="hidden items-center justify-center h-48 text-gray-500 text-sm"><span>Image not available</span></div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-48 rounded-lg bg-white/5 border border-dashed border-white/10">
+                  <div className="text-center">
+                    <div className="text-3xl mb-2">{'\u{1F4C4}'}</div>
+                    <p className="text-sm text-gray-500">Invoice image</p>
+                    <p className="text-xs text-gray-600">Available after save</p>
+                  </div>
+                </div>
+              )}
+            </div>
+            {form.confidence != null && (
+              <div className="glass-card p-4">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-gray-400">AI Confidence:</span>
+                  <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden max-w-[200px]">
+                    <div className="h-full rounded-full transition-all duration-500" style={{
+                      width: `${form.confidence * 100}%`,
+                      background: form.confidence >= 0.8 ? "linear-gradient(90deg, #22c55e, #4ade80)"
+                        : form.confidence >= 0.5 ? "linear-gradient(90deg, #eab308, #facc15)"
+                        : "linear-gradient(90deg, #ef4444, #f87171)"
+                    }} />
+                  </div>
+                  <span className={`font-semibold text-xs ${form.confidence >= 0.8 ? "text-green-400" : form.confidence >= 0.5 ? "text-yellow-400" : "text-red-400"}`}>
+                    {(form.confidence * 100).toFixed(1)}%
+                  </span>
+                </div>
+                {form.confidence < 0.8 && (
+                  <p className="text-xs text-yellow-400/70 mt-2 flex items-center gap-1">{'\u26A0'} Low confidence &mdash; verify all fields carefully</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="glass-card p-6 space-y-4">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Extracted Fields</h3>
+              {(form.confidence != null && form.confidence < 0.7) && (
+                <span className="tag tag-yellow text-[10px]">{'\u26A0'} Needs Review</span>
+              )}
+            </div>
+
+            <div className={`${form.confidence != null && form.confidence < 0.7 ? "ring-1 ring-yellow-500/20 rounded-lg p-3 -mx-1" : ""}`}>
+              <Field label="Seller GSTIN" error={errors.gstin} optional>
+                <input className={`input ${form.confidence != null && form.confidence < 0.6 ? "border-yellow-500/30" : ""}`} value={form.gstin} onChange={(e) => setForm((p) => ({ ...p, gstin: e.target.value }))} placeholder="Leave empty if not on invoice" />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Invoice Number" error={errors.invoice_number}>
+                  <input className={`input ${form.confidence != null && form.confidence < 0.6 ? "border-yellow-500/30" : ""}`} value={form.invoice_number} onChange={(e) => setForm((p) => ({ ...p, invoice_number: e.target.value }))} />
+                </Field>
+                <Field label="Date" error={errors.date}>
+                  <input className={`input ${form.confidence != null && form.confidence < 0.6 ? "border-yellow-500/30" : ""}`} value={form.date} onChange={(e) => setForm((p) => ({ ...p, date: e.target.value }))} placeholder="YYYY-MM-DD" />
+                </Field>
+              </div>
+              <Field label="Total Amount" error={errors.total_amount}>
+                <input className="input" type="number" step="0.01" value={form.total_amount} onChange={(e) => setForm((p) => ({ ...p, total_amount: e.target.value }))} />
+              </Field>
+              <Field label="Vendor Name" error={errors.vendor_name}>
+                <input className={`input ${form.confidence != null && form.confidence < 0.6 ? "border-yellow-500/30" : ""}`} value={form.vendor_name} onChange={(e) => setForm((p) => ({ ...p, vendor_name: e.target.value }))} />
+              </Field>
+              <Field label="Vendor Address" optional>
+                <input className="input" value={form.vendor_address || ""} onChange={(e) => setForm((p) => ({ ...p, vendor_address: e.target.value }))} />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Buyer GSTIN" optional>
+                  <input className="input" value={form.buyer_gstin || ""} onChange={(e) => setForm((p) => ({ ...p, buyer_gstin: e.target.value }))} />
+                </Field>
+                <Field label="Buyer Name" optional>
+                  <input className="input" value={form.buyer_name || ""} onChange={(e) => setForm((p) => ({ ...p, buyer_name: e.target.value }))} />
+                </Field>
+              </div>
+
+              <Field label="Voucher Type">
+                <select className="input" value={form.voucher_type || "Purchase"} onChange={(e) => setForm((p) => ({ ...p, voucher_type: e.target.value }))}>
+                  <option value="Purchase">Purchase</option>
+                  <option value="Sales">Sales</option>
+                  <option value="Payment">Payment</option>
+                  <option value="Receipt">Receipt</option>
+                  <option value="Journal">Journal</option>
+                  <option value="Credit Note">Credit Note</option>
+                  <option value="Debit Note">Debit Note</option>
+                </select>
+              </Field>
+            </div>
+
+            <div className="pt-2">
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-sm font-medium text-gray-300">Line Items</label>
+                <button onClick={() => { setForm((p) => ({ ...p, line_items: [...p.line_items, { description: "", quantity: 1, rate: 0, taxable_value: 0, tax_rate: 0 }] })); setLedgers((p) => [...p, ""]); }} className="btn-secondary text-xs px-3 py-1.5">+ Add Item</button>
+              </div>
+              {errors.line_items && <p className="text-red-400 text-xs mb-2">{errors.line_items}</p>}
+              {form.line_items.map((item, i) => (
+                <div key={i} className={`glass rounded-xl p-3 mb-2 space-y-2 border ${form.confidence != null && form.confidence < 0.7 ? "border-yellow-500/15" : "border-white/5"} animate-fadeIn`} style={{ animationDelay: `${i * 0.05}s` }}>
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-medium text-gray-500">Item {i+1}</span>
+                    <button onClick={() => { setForm((p) => ({ ...p, line_items: p.line_items.filter((_, j) => j !== i) })); setLedgers((p) => p.filter((_, j) => j !== i)); }} className="text-xs text-red-400 hover:text-red-300">Remove</button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {[{k:"description",l:"Description"},{k:"quantity",l:"Qty",t:"number"},{k:"rate",l:"Rate",t:"number"},{k:"taxable_value",l:"Taxable",t:"number"},{k:"tax_rate",l:"Tax Rate %",t:"number"},{k:"cgst",l:"CGST",t:"number",n:!0},{k:"sgst",l:"SGST",t:"number",n:!0},{k:"igst",l:"IGST",t:"number",n:!0}].map((f) => (
+                      <div key={f.k}>
+                        <label className="text-xs text-gray-500 mb-1 block">{f.l}</label>
+                        <input className="input text-sm" type={f.t||"text"} step={f.t==="number"?"0.01":void 0}
+                          value={f.n ? (item[f.k]??"") : item[f.k]}
+                          onChange={(e) => {
+                            const items = [...form.line_items];
+                            items[i] = { ...items[i], [f.k]: f.n && e.target.value === "" ? null : e.target.value };
+                            setForm((p) => ({ ...p, line_items: items }));
+                          }} />
+                      </div>
+                    ))}
+                    <div className="col-span-full">
+                      <label className="text-xs text-gray-500 mb-1 block flex items-center gap-1">
+                        Ledger <span className="text-red-400">*</span>
+                        <span className="text-gray-600 font-normal">(required)</span>
+                      </label>
+                      <select className="input text-sm" value={ledgers[i] || ""} onChange={(e) => { const l = [...ledgers]; l[i] = e.target.value; setLedgers(l); }}>
+                        <option value="">-- Select ledger --</option>
+                        {tallyLedgers.length > 0 && <optgroup label="From Tally">
+                          {tallyLedgers.map((l) => <option key={l} value={l}>{l}</option>)}
+                        </optgroup>}
+                        <optgroup label="Common">
+                          {COMMON_LEDGERS.map((l) => <option key={l} value={l}>{l}</option>)}
+                        </optgroup>
+                      </select>
+                      {ledgers[i] && <p className="text-[10px] text-green-400/70 mt-0.5">{'\u2713'} {ledgers[i]}</p>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {form.line_items.length > 0 && ledgers.some((l) => !l) && (
+                <p className="text-xs text-yellow-400/70 mt-1 flex items-center gap-1">{'\u26A0'} Assign a ledger to each item before confirming</p>
+              )}
+            </div>
+
+            {showPreview && mastersPreview && (
+              <div className="glass-card p-3 space-y-2 border border-indigo-500/20">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-semibold text-indigo-300">Pre-Import Report</h4>
+                  <button onClick={() => setShowPreview(false)} className="text-xs text-gray-500 hover:text-gray-300">Hide</button>
+                </div>
+
+                {showWarnings.length > 0 && (
+                  <div className="space-y-1 mb-2">
+                    {showWarnings.map((w, i) => {
+                      const severity = w.severity || "medium";
+                      const bg = severity === "high" ? "bg-red-500/10 border-red-500/20" : severity === "medium" ? "bg-amber-500/10 border-amber-500/20" : "bg-blue-500/10 border-blue-500/20";
+                      const text = severity === "high" ? "text-red-300" : severity === "medium" ? "text-amber-300" : "text-blue-300";
+                      return (
+                        <div key={i} className={`${bg} border rounded-lg p-2`}>
+                          <div className="flex items-center gap-1 mb-0.5">
+                            <span className={`text-[10px] font-bold ${text}`}>{severity === "high" ? "!" : "\u26A0"}</span>
+                            <span className={`text-[10px] font-medium ${text}`}>
+                              {w.type === "company_name" ? "Company" : w.type === "company_gstin" ? "GSTIN" : w.type === "vendor_name" ? "Vendor" : w.type === "similar_vendor_exists" ? "Similar Vendor" : w.type === "duplicate_invoice" ? "Duplicate" : "Validation"}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-gray-300">{w.message}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 text-xs text-gray-500 mb-1">
+                  <span className="font-semibold text-indigo-300">{mastersPreview.length}</span> masters
+                </div>
+                <div className="space-y-1 max-h-36 overflow-y-auto">
+                  {mastersPreview.map((m, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[11px]">
+                      <span className={`px-1.5 py-0.5 rounded font-mono ${m.type === "VoucherType" ? "text-purple-300 bg-purple-500/10" : m.type === "StockItem" || m.type === "StockGroup" ? "text-emerald-300 bg-emerald-500/10" : "text-cyan-300 bg-cyan-500/10"}`}>{m.type}</span>
+                      <span className="text-gray-200">{m.name}</span>
+                      {m.parent && <span className="text-gray-500">{'\u2192'} {m.parent}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {reviewErrors && (
+              <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 space-y-1">
+                <p className="text-xs font-medium text-red-400">Review Blocked</p>
+                {reviewErrors.map((e, i) => <p key={i} className="text-xs text-red-300/80 pl-2 border-l-2 border-red-500/30">{e}</p>)}
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-2 flex-wrap">
+              <button onClick={previewMasters} disabled={previewLoading} className="btn-secondary text-xs px-3 py-2">
+                {previewLoading ? "Loading..." : "Preview Masters"}
+              </button>
+
+              {!reviewConfirmed ? (
+                <button onClick={doReviewConfirm} className="btn-primary flex-1 py-2.5 text-sm">
+                  Review &amp; Confirm
+                </button>
+              ) : (
+                <button onClick={() => downloadXML()} className="btn-primary flex-1 py-2.5 text-sm">
+                  Download XML
+                </button>
+              )}
+
+              <button onClick={resetForm} className="btn-secondary text-xs px-3 py-2">Clear</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showValModal && valModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowValModal(false)}>
+          <div className="glass-card max-w-lg w-full mx-4 p-6 space-y-4 animate-slideUp" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-200">Validation Results</h3>
+              <button onClick={() => setShowValModal(false)} className="text-gray-500 hover:text-gray-300 text-xl">&times;</button>
+            </div>
+
+            {valModalData.warnings.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-yellow-400">Warnings</p>
+                {valModalData.warnings.map((w, i) => (
+                  <p key={i} className="text-xs text-yellow-300/80 pl-2 border-l-2 border-yellow-500/30">{w}</p>
+                ))}
+              </div>
+            )}
+
+            {valModalData.soft.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-orange-400">Soft Errors (overridable)</p>
+                {valModalData.soft.map((e, i) => (
+                  <p key={i} className="text-xs text-orange-300/80 pl-2 border-l-2 border-orange-500/30">{e}</p>
+                ))}
+              </div>
+            )}
+
+            {valModalData.blocking.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-red-400">Blocking Errors</p>
+                {valModalData.blocking.map((e, i) => (
+                  <p key={i} className="text-xs text-red-300/80 pl-2 border-l-2 border-red-500/30">{e}</p>
+                ))}
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <button onClick={() => { setShowValModal(false); downloadXML(true); }}
+                className="btn-primary flex-1 py-2.5 text-sm">
+                Generate Anyway
+              </button>
+              <button onClick={() => setShowValModal(false)}
+                className="btn-secondary flex-1 py-2.5 text-sm">
+                Back to Edit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ValidationSummary({ validation }) {
+  if (!validation) return null;
+  const checks = Object.entries(validation.checks || {});
+  const passed = checks.filter(([, r]) => r.pass).length;
+  const total = checks.length;
+  const warnings = validation.warnings || [];
+  const softErrors = validation.soft_errors || [];
+  const blockingErrors = validation.blocking_errors || [];
+  const statutoryChecks = ["statutory_routing", "gst_structure", "gstin", "tax_rates"];
+  return (
+    <div className="glass-card p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-400">Document:</span>
+          <span className="text-sm font-semibold text-gray-200 capitalize">{(validation.document_type || "unknown").replace(/_/g, " ")}</span>
+        </div>
+        <span className={`tag ${validation.passed ? "tag-green" : "tag-red"}`}>
+          {validation.passed ? "PASS" : "FAIL"}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {checks.map(([name, result]) => {
+          const isStatutory = statutoryChecks.includes(name);
+          return (
+            <div key={name} className={`tag tag-sm text-xs relative ${
+              result.pass ? (result.warnings?.length ? "tag-yellow" : isStatutory ? "tag-blue" : "tag-green") : "tag-red"
+            } ${isStatutory ? "ring-1 ring-blue-400/40" : ""}`}>
+              {isStatutory && <span className="text-[9px] uppercase tracking-wider text-blue-300 mr-1" title="CGST Act 2017">\u2696</span>}
+              <span>{result.pass ? (result.warnings?.length ? "\u26A0" : "\u2713") : "\u2717"}</span>
+              <span className="capitalize">{name.replace(/_/g, " ")}</span>
+            </div>
+          );
+        })}
+      </div>
+      {warnings.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-yellow-400">Warnings</p>
+          {warnings.map((w, i) => (
+            <p key={i} className="text-xs text-yellow-300/80 pl-2 border-l-2 border-yellow-500/30">{w}</p>
+          ))}
+        </div>
+      )}
+      {softErrors.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-orange-400">Soft Errors (overridable)</p>
+          {softErrors.map((e, i) => (
+            <p key={i} className="text-xs text-orange-300/80 pl-2 border-l-2 border-orange-500/30">{e}</p>
+          ))}
+        </div>
+      )}
+      {blockingErrors.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-red-400">Blocking Errors</p>
+          {blockingErrors.map((e, i) => (
+            <p key={i} className="text-xs text-red-300/80 pl-2 border-l-2 border-red-500/30">{e}</p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice }) {
+  const { getAuthHeaders } = useAuth();
+  const [invoices, setInvoices] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(null);
+  const [actionMsg, setActionMsg] = useState(null);
+  const [filterClient, setFilterClient] = useState("");
+  const [showDashModal, setShowDashModal] = useState(false);
+  const [dashModalData, setDashModalData] = useState(null);
+  const [dashPendingInv, setDashPendingInv] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkLedger, setBulkLedger] = useState("");
+
+  useEffect(() => {
+    fetch(`${BACKEND}/clients`, { headers: getAuthHeaders() })
+      .then((r) => r.json()).then(setClients).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setLoading(true); setFetchError(null);
+    const ctrl = new AbortController();
+    const url = filterClient ? `${BACKEND}/invoices?client_id=${filterClient}` : `${BACKEND}/invoices`;
+    fetch(url, { signal: ctrl.signal, headers: getAuthHeaders() })
+      .then((r) => { if (!r.ok) throw new Error("Failed"); return r.json(); })
+      .then(setInvoices)
+      .catch((e) => { if (e.name !== "AbortError") setFetchError(e.message); })
+      .finally(() => setLoading(false));
+    return () => ctrl.abort();
+  }, [refreshKey, filterClient]);
+
+  function toggleSelect(id) {
+    setSelectedIds((prev) => prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]);
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.length === invoices.length) { setSelectedIds([]); }
+    else { setSelectedIds(invoices.map((i) => i.id)); }
+  }
+
+  async function applyBulkMap() {
+    if (!selectedIds.length || !bulkLedger.trim()) return;
+    const res = await fetch(`${BACKEND}/api/v3/invoices/bulk-map`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ invoice_ids: selectedIds, target_ledger: bulkLedger.trim() }),
+    });
+    if (res.ok) { setActionMsg({ type: "success", text: `${selectedIds.length} invoices mapped to "${bulkLedger}"` }); setSelectedIds([]); setRefreshKey((k) => k + 1); }
+    else setActionMsg({ type: "error", text: "Bulk map failed" });
+  }
+
+  async function generateXml(inv, force = false) {
+    setActionMsg({ type: "info", text: "Validating..." });
+    try {
+      const res = await fetch(`${BACKEND}/invoices/${inv.id}/generate?force=${force}`, { method: "POST", headers: getAuthHeaders() });
+      if (res.status === 422) {
+        const body = await res.json();
+        setDashModalData({
+          blocking: body.blocking_errors || [],
+          soft: body.soft_errors || [],
+          warnings: body.warnings || [],
+          message: body.message || "Validation produced warnings",
+        });
+        setDashPendingInv(inv);
+        setShowDashModal(true);
+        return;
+      }
+      const result = await res.json();
+      if (result.valid) {
+        const blob = new Blob([result.xml], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href = url; a.download = `invoice_${inv.id}_${(inv.invoice_number||"output").replace(/[^a-zA-Z0-9_-]/g,"_")}.xml`; a.click();
+        URL.revokeObjectURL(url);
+        setActionMsg({ type: "success", text: "XML downloaded!" });
+        setRefreshKey((k) => k + 1);
+      } else setActionMsg({ type: "error", text: "Validation failed." });
+    } catch (e) { setActionMsg({ type: "error", text: e.message }); }
+  }
+
+  async function downloadXml(id) {
+    try {
+      const res = await fetch(`${BACKEND}/invoices/${id}/xml`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Not available");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = `invoice_${id}.xml`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { setActionMsg({ type: "error", text: e.message }); }
+  }
+
+  async function sendToTally(inv) {
+    setActionMsg({ type: "info", text: "Queueing for Tally sync..." });
+    try {
+      const res = await fetch(`${BACKEND}/api/v3/invoices/${inv.id}/sync-now`, { method: "POST", headers: getAuthHeaders() });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      const result = await res.json();
+      setActionMsg({ type: "success", text: result.message || "Queued! Connector will pick it up within 30s." });
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      setActionMsg({ type: "error", text: `Sync trigger failed: ${e.message}` });
+    }
+  }
+
+  if (loading) return <div className="text-center py-20"><div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>;
+
+  return (
+    <div className="space-y-4 animate-fadeIn">
+      {actionMsg && (
+        <div className={`glass rounded-xl p-4 text-sm flex items-center gap-2 ${
+          actionMsg.type === "error" ? "border-red-500/20 text-red-300"
+          : actionMsg.type === "success" ? "border-green-500/20 text-green-300"
+          : "border-indigo-500/20 text-indigo-300"
+        }`}>{actionMsg.text}</div>
+      )}
+
+      <div className="glass rounded-xl px-4 py-3 flex items-center gap-3">
+        <label className="text-sm text-gray-300 whitespace-nowrap">Filter by client:</label>
+        <select className="input max-w-xs" value={filterClient} onChange={(e) => setFilterClient(e.target.value)}>
+          <option value="">All Clients</option>
+          {clients.map((c) => (
+            <option key={c.client_id} value={c.client_id}>{c.company_name}</option>
+          ))}
+        </select>
+      </div>
+
+      {invoices.length === 0 ? (
+        <div className="glass-card p-12 text-center">
+          <p className="text-gray-400 text-lg">No invoices yet.</p>
+          <p className="text-gray-500 text-sm mt-2">Go to Extract tab to process invoices.</p>
+        </div>
+      ) : (
+        <div>
+          {selectedIds.length > 0 && (
+            <div className="glass rounded-xl px-4 py-3 mb-3 flex items-center gap-3">
+              <span className="text-xs text-gray-400">{selectedIds.length} selected</span>
+              <input className="input flex-1 text-xs" value={bulkLedger} onChange={(e) => setBulkLedger(e.target.value)} placeholder="Target ledger name..." />
+              <button onClick={applyBulkMap} className="px-3 py-1.5 bg-indigo-500/20 text-indigo-300 rounded-lg text-xs font-medium hover:bg-indigo-500/30">Apply to Selected</button>
+              <button onClick={() => setSelectedIds([])} className="text-xs text-gray-500 hover:text-gray-300">Clear</button>
+            </div>
+          )}
+          <div className="glass-card overflow-hidden">
+            <table className="w-full text-sm">
+              <thead><tr className="border-b border-white/5 text-left text-xs text-gray-500 uppercase">
+                <th className="px-2 py-3.5 w-8">
+                  <input type="checkbox" className="accent-indigo-500" checked={selectedIds.length === invoices.length && invoices.length > 0} onChange={toggleSelectAll} />
+                </th>
+                <th className="px-2 py-3.5 font-medium">#</th>
+                <th className="px-4 py-3.5 font-medium">Vendor</th>
+                <th className="px-4 py-3.5 font-medium">Invoice</th>
+                <th className="px-4 py-3.5 font-medium">Date</th>
+                <th className="px-4 py-3.5 font-medium">Status</th>
+                <th className="px-4 py-3.5 font-medium text-center">Tally</th>
+                <th className="px-4 py-3.5 font-medium text-right">Amount</th>
+                <th className="px-4 py-3.5 font-medium text-center">XML</th>
+              </tr></thead>
+              <tbody className="divide-y divide-white/5">
+                {invoices.map((inv) => (
+                  <tr key={inv.id} className={`table-row cursor-pointer hover:bg-white/[0.03] ${selectedIds.includes(inv.id) ? "bg-indigo-500/5" : ""}`} onClick={() => onEditInvoice(inv.id)}>
+                    <td className="px-2 py-3.5">
+                      <input type="checkbox" className="accent-indigo-500" checked={selectedIds.includes(inv.id)} onChange={(e) => { e.stopPropagation(); toggleSelect(inv.id); }} onClick={(e) => e.stopPropagation()} />
+                    </td>
+                    <td className="px-2 py-3.5 text-gray-500 text-xs">{inv.id}</td>
+                  <td className="px-4 py-3.5 font-medium text-gray-200">{inv.vendor_name || "-"}</td>
+                  <td className="px-4 py-3.5 text-gray-300">{inv.invoice_number || "-"}</td>
+                  <td className="px-4 py-3.5 text-gray-400">{inv.date || "-"}</td>
+                  <td className="px-4 py-3.5">
+                    <div className="flex items-center gap-1.5">
+                      {inv.status === "draft" ? (
+                        <span className="tag tag-yellow text-[10px]">Draft</span>
+                      ) : inv.status === "validated" ? (
+                        <span className="tag tag-green text-[10px]">Reviewed</span>
+                      ) : inv.status === "exported" ? (
+                        <span className="tag tag-blue text-[10px]">Exported</span>
+                      ) : (
+                        <span className="tag tag-gray text-[10px]">{inv.status || "Pending"}</span>
+                      )}
+                      {inv.decision_label && inv.decision_label !== "Unknown" && (
+                        <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full`}
+                          style={{ backgroundColor: inv.decision_color === "green" ? "rgba(34,197,94,0.15)" : inv.decision_color === "red" ? "rgba(239,68,68,0.15)" : inv.decision_color === "yellow" ? "rgba(234,179,8,0.15)" : "rgba(107,114,128,0.15)", color: inv.decision_color === "green" ? "#22c55e" : inv.decision_color === "red" ? "#ef4444" : inv.decision_color === "yellow" ? "#eab308" : "#9ca3af" }}>
+                          {inv.decision_label}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3.5 text-center">
+                    {(() => {
+                      const s = inv.status;
+                      if (s === "exported") return <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full" style={{background:"rgba(34,197,94,0.15)",color:"#4ade80"}}>Synced</span>;
+                      if (s === "sync_error") return (
+                        <div className="flex items-center gap-1.5 justify-center">
+                          <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full" style={{background:"rgba(239,68,68,0.15)",color:"#f87171"}} title={inv.sync_error || ""}>Failed</span>
+                          <button onClick={(e) => { e.stopPropagation(); sendToTally(inv); }}
+                            className="text-[10px] text-yellow-400 hover:text-yellow-300 underline" title={inv.sync_error || ""}>Retry</button>
+                        </div>
+                      );
+                      if (s === "validated" && inv.xml_generated) return (
+                        <button onClick={(e) => { e.stopPropagation(); sendToTally(inv); }}
+                          className="text-xs font-medium text-blue-400 hover:text-blue-300 underline">Send to Tally</button>
+                      );
+                      return <span className="text-xs text-gray-500">-</span>;
+                    })()}
+                  </td>
+                  <td className="px-4 py-3.5 text-right font-medium text-gray-200">{inv.total_amount ? "\u20B9" + parseFloat(inv.total_amount).toLocaleString() : "-"}</td>
+                  <td className="px-4 py-3.5 text-center">
+                    {inv.status === "draft" ? (
+                      <button onClick={(e) => { e.stopPropagation(); onEditInvoice(inv.id); }}
+                        className="text-xs font-medium text-yellow-400 hover:text-yellow-300 underline">Review</button>
+                    ) : inv.xml_generated ? (
+                      <button onClick={(e) => { e.stopPropagation(); downloadXml(inv.id); }}
+                        className="text-xs font-medium text-indigo-400 hover:text-indigo-300 underline">Download</button>
+                    ) : (
+                      <button onClick={(e) => { e.stopPropagation(); generateXml(inv); }}
+                        className="text-xs font-medium text-yellow-400 hover:text-yellow-300 underline">Generate</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        </div>
+      )}
+
+      {showDashModal && dashModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { setShowDashModal(false); setDashPendingInv(null); }}>
+          <div className="glass-card max-w-lg w-full mx-4 p-6 space-y-4 animate-slideUp" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-200">Validation Results</h3>
+              <button onClick={() => { setShowDashModal(false); setDashPendingInv(null); }} className="text-gray-500 hover:text-gray-300 text-xl">&times;</button>
+            </div>
+
+            {dashModalData.warnings.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-yellow-400">Warnings</p>
+                {dashModalData.warnings.map((w, i) => (
+                  <p key={i} className="text-xs text-yellow-300/80 pl-2 border-l-2 border-yellow-500/30">{w}</p>
+                ))}
+              </div>
+            )}
+
+            {dashModalData.soft.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-orange-400">Soft Errors (overridable)</p>
+                {dashModalData.soft.map((e, i) => (
+                  <p key={i} className="text-xs text-orange-300/80 pl-2 border-l-2 border-orange-500/30">{e}</p>
+                ))}
+              </div>
+            )}
+
+            {dashModalData.blocking.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-red-400">Blocking Errors</p>
+                {dashModalData.blocking.map((e, i) => (
+                  <p key={i} className="text-xs text-red-300/80 pl-2 border-l-2 border-red-500/30">{e}</p>
+                ))}
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <button onClick={() => { const inv = dashPendingInv; setShowDashModal(false); setDashPendingInv(null); if (inv) generateXml(inv, true); }}
+                className="btn-primary flex-1 py-2.5 text-sm">
+                Generate Anyway
+              </button>
+              <button onClick={() => { setShowDashModal(false); setDashPendingInv(null); }}
+                className="btn-secondary flex-1 py-2.5 text-sm">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminPage() {
+  const { getAuthHeaders } = useAuth();
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`${BACKEND}/auth/admin/users`, { headers: getAuthHeaders() })
+      .then((r) => r.json()).then(setUsers).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div className="text-center py-20"><div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>;
+
+  return (
+    <div className="space-y-4 animate-fadeIn">
+      <h2 className="text-lg font-bold gradient-text">Users ({users.length})</h2>
+      <div className="glass-card overflow-hidden">
+        <table className="w-full text-sm">
+          <thead><tr className="border-b border-white/5 text-left text-xs text-gray-500 uppercase">
+            <th className="px-4 py-3.5 font-medium">Email</th>
+            <th className="px-4 py-3.5 font-medium">Name</th>
+            <th className="px-4 py-3.5 font-medium">Role</th>
+            <th className="px-4 py-3.5 font-medium text-center">Invoices</th>
+            <th className="px-4 py-3.5 font-medium">Joined</th>
+          </tr></thead>
+          <tbody className="divide-y divide-white/5">
+            {users.map((u) => (
+              <tr key={u.email} className="table-row">
+                <td className="px-4 py-3.5 font-medium text-gray-200">{u.email}</td>
+                <td className="px-4 py-3.5 text-gray-300">{u.name || "-"}</td>
+                <td className="px-4 py-3.5"><span className={`tag ${u.role === "admin" ? "tag-yellow" : "tag-green"}`}>{u.role}</span></td>
+                <td className="px-4 py-3.5 text-center text-gray-400">{u.invoice_count || 0}</td>
+                <td className="px-4 py-3.5 text-xs text-gray-500">{u.created_at ? u.created_at.slice(0, 10) : "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SettingsPage() {
+  const { user, refreshUser, getAuthHeaders, BACKEND } = useAuth();
+  const [companyName, setCompanyName] = useState(user?.company_name || "");
+  const [companyGstin, setCompanyGstin] = useState(user?.company_gstin || "");
+  const [stateCode, setStateCode] = useState(user?.company_state_code || "");
+  const [purchaseLedger, setPurchaseLedger] = useState(user?.purchase_ledger || "Purchase");
+  const [salesLedger, setSalesLedger] = useState(user?.sales_ledger || "Sales");
+  const [bankLedger, setBankLedger] = useState(user?.bank_ledger || "Bank");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  async function handleSave(e) {
+    e.preventDefault();
+    setError(""); setSaved(false);
+    if (!companyName || !companyGstin || !stateCode) {
+      setError("Company Name, GSTIN, and State Code are required");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch(`${BACKEND}/api/v3/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({
+          company_name: companyName,
+          company_gstin: companyGstin.toUpperCase(),
+          company_state_code: stateCode,
+          purchase_ledger: purchaseLedger,
+          sales_ledger: salesLedger,
+          bank_ledger: bankLedger,
+        }),
+      });
+      if (!res.ok) { let msg = "Failed to save"; try { const e = await res.json(); msg = e.detail || msg; } catch {} throw new Error(msg); }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) { setError(err.message); }
+    setBusy(false);
+  }
+
+  return (
+    <div className="space-y-4 animate-fadeIn">
+      <h2 className="text-lg font-bold gradient-text">Company Settings</h2>
+      <p className="text-sm text-gray-400">These settings are used for all invoices and XML generation.</p>
+      <form onSubmit={handleSave} className="glass-card p-6 space-y-4 max-w-2xl">
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block">Company Name (as in Tally) *</label>
+          <input className="input w-full" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="e.g. My Firm & Co." />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-gray-500 mb-1 block">Company GSTIN *</label>
+            <input className="input w-full font-mono text-sm" value={companyGstin} onChange={(e) => setCompanyGstin(e.target.value.toUpperCase())} placeholder="e.g. 27AABCU1234F1ZP" maxLength={15} />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 mb-1 block">State Code *</label>
+            <select className="input w-full" value={stateCode} onChange={(e) => setStateCode(e.target.value)}>
+              <option value="">-- Select --</option>
+              {["01-Jammu & Kashmir","02-Himachal Pradesh","03-Punjab","04-Chandigarh","05-Uttarakhand","06-Haryana","07-Delhi","08-Rajasthan","09-Uttar Pradesh","10-Bihar","11-Sikkim","12-Arunachal Pradesh","13-Nagaland","14-Manipur","15-Mizoram","16-Tripura","17-Meghalaya","18-Assam","19-West Bengal","20-Jharkhand","21-Odisha","22-Chhattisgarh","23-Madhya Pradesh","24-Gujarat","25-Daman & Diu","26-Dadra & Nagar Haveli","27-Maharashtra","28-Andhra Pradesh (old)","29-Karnataka","30-Goa","31-Lakshadweep","32-Kerala","33-Tamil Nadu","34-Puducherry","35-Andaman & Nicobar","36-Telangana","37-Andhra Pradesh (new)"].map((s) => (
+                <option key={s} value={s.slice(0,2)}>{s}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="pt-2 border-t border-white/5">
+          <p className="text-xs text-gray-500 mb-3">Tally Ledger Names (must match your Tally Chart of Accounts)</p>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Purchase Ledger</label>
+              <input className="input w-full text-sm" value={purchaseLedger} onChange={(e) => setPurchaseLedger(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Sales Ledger</label>
+              <input className="input w-full text-sm" value={salesLedger} onChange={(e) => setSalesLedger(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Bank Ledger</label>
+              <input className="input w-full text-sm" value={bankLedger} onChange={(e) => setBankLedger(e.target.value)} />
+            </div>
+          </div>
+        </div>
+        {error && <p className="text-red-400 text-sm">{error}</p>}
+        {saved && <p className="text-green-400 text-sm">Settings saved successfully.</p>}
+        <button type="submit" disabled={busy} className="btn-primary py-3 px-6">
+          {busy ? "Saving..." : "Save Settings"}
+        </button>
+      </form>
+
+      <div className="glass-card p-6 max-w-2xl">
+        <h3 className="text-sm font-semibold text-gray-200 mb-3">Ledger Corrections</h3>
+        <p className="text-xs text-gray-500 mb-3">When a description maps to the wrong ledger, add a correction here. It will be remembered for future invoices.</p>
+        <CorrectionMemoryUI />
+      </div>
+    </div>
+  );
+}
+
+function BankingPage() {
+  const { getAuthHeaders, BACKEND } = useAuth();
+  const [rules, setRules] = useState([]);
+  const [keyword, setKeyword] = useState("");
+  const [voucherType, setVoucherType] = useState("Receipt");
+  const [targetLedger, setTargetLedger] = useState("");
+  const [txInput, setTxInput] = useState("");
+  const [bankLedger, setBankLedger] = useState("Bank");
+  const [processed, setProcessed] = useState(null);
+  const [xml, setXml] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const fetchRules = () => {
+    fetch(`${BACKEND}/api/v3/banking/rules`, { headers: getAuthHeaders() })
+      .then((r) => r.json()).then(setRules).catch(() => {}).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { fetchRules(); }, []);
+
+  async function addRule() {
+    if (!keyword.trim() || !targetLedger.trim()) return;
+    await fetch(`${BACKEND}/api/v3/banking/rules`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ keyword: keyword.trim(), voucher_type: voucherType, target_ledger: targetLedger.trim() }),
+    });
+    setKeyword(""); setTargetLedger("");
+    fetchRules();
+  }
+
+  async function deleteRule(id) {
+    await fetch(`${BACKEND}/api/v3/banking/rules/${id}`, { method: "DELETE", headers: getAuthHeaders() });
+    fetchRules();
+  }
+
+  async function processStatement() {
+    let txs;
+    try { txs = JSON.parse(txInput); } catch { return; }
+    const res = await fetch(`${BACKEND}/api/v3/banking/process`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ transactions: txs, bank_ledger: bankLedger }),
+    });
+    if (res.ok) { const d = await res.json(); setProcessed(d.processed); setXml(d.xml); }
+  }
+
+  return (
+    <div className="space-y-4 animate-fadeIn">
+      <h2 className="text-lg font-bold gradient-text">Bank Statement Automation</h2>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="glass-card p-5 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-200">Keyword Rules</h3>
+          <p className="text-xs text-gray-400">Map keywords → voucher type + ledger (e.g. "Razorpay" → Receipt → URD Debtors)</p>
+          {loading ? <p className="text-xs text-gray-500">Loading...</p> : (
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {rules.length === 0 && <p className="text-xs text-gray-500">No rules yet.</p>}
+              {rules.map((r) => (
+                <div key={r.id} className="flex items-center justify-between bg-white/5 rounded-lg px-3 py-2">
+                  <div className="text-xs"><span className="font-mono text-yellow-400">{r.keyword}</span> <span className="text-gray-500">→</span> <span className="text-blue-400">{r.voucher_type}</span> <span className="text-gray-500">→</span> <span className="text-green-400">{r.target_ledger}</span></div>
+                  <button onClick={() => deleteRule(r.id)} className="text-red-400 hover:text-red-300 text-xs">&times;</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2 items-end">
+            <div className="flex-1 space-y-1">
+              <label className="text-[10px] text-gray-500">Keyword</label>
+              <input className="input w-full text-xs" value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="e.g. Razorpay" />
+            </div>
+            <div className="w-24 space-y-1">
+              <label className="text-[10px] text-gray-500">Type</label>
+              <select className="input w-full text-xs" value={voucherType} onChange={(e) => setVoucherType(e.target.value)}>
+                <option>Receipt</option><option>Payment</option><option>Journal</option>
+              </select>
+            </div>
+            <div className="flex-1 space-y-1">
+              <label className="text-[10px] text-gray-500">Ledger</label>
+              <input className="input w-full text-xs" value={targetLedger} onChange={(e) => setTargetLedger(e.target.value)} placeholder="e.g. URD Debtors" />
+            </div>
+            <button onClick={addRule} className="px-3 py-2 bg-indigo-500/20 text-indigo-300 rounded-lg text-xs font-medium hover:bg-indigo-500/30">Add</button>
+          </div>
+        </div>
+        <div className="glass-card p-5 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-200">Process Statement</h3>
+          <p className="text-xs text-gray-400">Paste JSON array of transactions, click Process</p>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-[10px] text-gray-500">Bank Ledger in Tally</label>
+              <input className="input w-full text-xs" value={bankLedger} onChange={(e) => setBankLedger(e.target.value)} />
+            </div>
+          </div>
+          <textarea className="input w-full h-28 text-xs font-mono" value={txInput} onChange={(e) => setTxInput(e.target.value)} placeholder='[{"transaction_date":"2026-07-09","description":"ACH CRED-RAZORPAY","withdraw_amount":0,"deposit_amount":4247,"balance":50000}]' />
+          <button onClick={processStatement} className="px-4 py-2 bg-indigo-500/20 text-indigo-300 rounded-lg text-xs font-medium hover:bg-indigo-500/30">Process</button>
+          {processed && (
+            <div className="space-y-2">
+              <h4 className="text-xs font-semibold text-gray-300">Mapped Transactions ({processed.length})</h4>
+              <div className="max-h-40 overflow-y-auto space-y-1">
+                {processed.map((tx, i) => (
+                  <div key={i} className="text-xs bg-white/5 rounded px-2 py-1 flex gap-2">
+                    <span className="text-gray-500 w-20">{tx.transaction_date}</span>
+                    <span className="text-gray-300 flex-1 truncate">{tx.description}</span>
+                    <span className={tx.voucher_type === "Receipt" ? "text-green-400" : "text-red-400"}>{tx.voucher_type}</span>
+                    <span className="text-blue-400">{tx.target_ledger}</span>
+                    {tx.rule_applied && <span className="text-yellow-500 text-[10px]">({tx.rule_applied})</span>}
+                  </div>
+                ))}
+              </div>
+              {xml && <button onClick={() => { const b = new Blob([xml], {type:"application/xml"}); const a = document.createElement("a"); a.href=URL.createObjectURL(b); a.download="bank_statement.xml"; a.click(); }} className="text-xs text-indigo-400 underline">Download XML</button>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CorrectionMemoryUI() {
+  const { getAuthHeaders, BACKEND, user } = useAuth();
+  const [corrections, setCorrections] = useState({});
+  const [newDesc, setNewDesc] = useState("");
+  const [newLedger, setNewLedger] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch(`${BACKEND}/corrections`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((d) => setCorrections(d.corrections || {}))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [user]);
+
+  async function addCorrection() {
+    if (!newDesc.trim() || !newLedger.trim()) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`${BACKEND}/corrections`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ description: newDesc.trim(), ledger: newLedger.trim() }),
+      });
+      if (res.ok) {
+        setCorrections((p) => ({ ...p, [newDesc.trim().toLowerCase()]: newLedger.trim() }));
+        setNewDesc(""); setNewLedger("");
+      }
+    } catch {}
+    setSaving(false);
+  }
+
+  async function clearAll() {
+    if (!window.confirm("Clear all correction memory?")) return;
+    await fetch(`${BACKEND}/corrections`, { method: "DELETE", headers: getAuthHeaders() });
+    setCorrections({});
+  }
+
+  async function removeOne(desc) {
+    await fetch(`${BACKEND}/corrections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ description: desc, ledger: "" }),
+    });
+    setCorrections((p) => { const n = { ...p }; delete n[desc]; return n; });
+  }
+
+  const entries = Object.entries(corrections);
+  return (
+    <div>
+      {loading ? (
+        <div className="text-xs text-gray-500">Loading...</div>
+      ) : entries.length > 0 ? (
+        <div className="space-y-1.5 mb-3 max-h-48 overflow-y-auto">
+          {entries.map(([desc, ledger]) => (
+            <div key={desc} className="flex items-center gap-2 text-xs">
+              <span className="text-gray-300 font-mono min-w-0 flex-1 truncate">{desc}</span>
+              <span className="text-gray-500">→</span>
+              <span className="text-indigo-300 font-mono min-w-0 flex-1 truncate">{ledger}</span>
+              <button onClick={() => removeOne(desc)} className="text-red-400 hover:text-red-300 shrink-0">✕</button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-gray-600 mb-3">No corrections yet. They will appear here after you save them.</p>
+      )}
+      <div className="flex gap-2">
+        <input className="input flex-1 text-xs" placeholder="Description (e.g. AWS)"
+          value={newDesc} onChange={(e) => setNewDesc(e.target.value)} />
+        <input className="input flex-1 text-xs" placeholder="Ledger (e.g. Professional Charges)"
+          value={newLedger} onChange={(e) => setNewLedger(e.target.value)} />
+        <button onClick={addCorrection} disabled={saving || !newDesc.trim() || !newLedger.trim()}
+          className="btn-primary text-xs px-3 py-1.5 shrink-0">Save</button>
+      </div>
+      {entries.length > 0 && (
+        <button onClick={clearAll} className="text-xs text-red-400 hover:text-red-300 mt-3">Clear all</button>
+      )}
+    </div>
+  );
+}
+
+// AUTH DISABLED - SetupWizard removed
+
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-8">
+          <div className="glass-card p-8 max-w-lg text-center space-y-4">
+            <p className="text-red-400 text-lg font-semibold">Something went wrong</p>
+            <p className="text-gray-400 text-sm">{this.state.error.message}</p>
+            <button onClick={() => this.setState({ error: null })} className="btn-primary px-6 py-2">Try Again</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function App() {
+  const { user, getAuthHeaders } = useAuth();
+  const [page, setPage] = useState("extract");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [currentId, setCurrentId] = useState(null);
+  const [selectedClient, setSelectedClient] = useState("");
+  const [tallyStatus, setTallyStatus] = useState(null);
+  // Lifted so handleEditInvoice (App scope) can set them without ReferenceError
+  const [ledgers, setLedgers] = useState([]);
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
+  const [reviewErrors, setReviewErrors] = useState(null);
+  const [form, setForm] = useState({
+    gstin: "", invoice_number: "", date: "", total_amount: "",
+    vendor_name: "", vendor_address: "", buyer_gstin: "", buyer_name: "", confidence: null, line_items: [],
+  });
+
+  useEffect(() => {
+    fetch(`${BACKEND}/api/v3/tally/status`, { headers: getAuthHeaders() })
+      .then((r) => r.json()).then(setTallyStatus).catch(() => {});
+    const interval = setInterval(() => {
+      fetch(`${BACKEND}/api/v3/tally/status`, { headers: getAuthHeaders() })
+        .then((r) => r.json()).then(setTallyStatus).catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  async function handleEditInvoice(invId) {
+    try {
+      const res = await fetch(`${BACKEND}/invoices/${invId}`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to load invoice");
+      const d = await res.json();
+      const items = Array.isArray(d.line_items) ? d.line_items : [];
+      setForm({
+        gstin: d.gstin || "", invoice_number: d.invoice_number || "", date: d.date || "",
+        total_amount: d.total_amount != null ? String(d.total_amount) : "",
+        vendor_name: d.vendor_name || "", vendor_address: d.vendor_address || "",
+        buyer_gstin: d.buyer_gstin || "", buyer_name: d.buyer_name || "",
+        voucher_type: d.voucher_type || "Purchase",
+        confidence: d.confidence ?? null,
+        freight: d.freight != null ? d.freight : 0,
+        round_off: d.round_off != null ? d.round_off : 0,
+        tds_amount: d.tds_amount != null ? d.tds_amount : 0,
+        line_items: items,
+        _provider: d._provider || "", _model: d._model || "",
+      });
+      setLedgers(items.map(() => ""));
+      setReviewConfirmed(false);
+      setReviewErrors(null);
+      setCurrentId(invId);
+      if (d.client_id) setSelectedClient(String(d.client_id));
+      setPage("extract");
+    } catch (e) {
+      alert("Error loading invoice: " + e.message);
+    }
+  }
+
+  return (
+    <ErrorBoundary>
+    <div className="min-h-screen">
+      <div className="orb-1 bg-orb" /><div className="orb-2 bg-orb" /><div className="orb-3 bg-orb" />
+      <div className="max-w-5xl mx-auto px-6 py-6">
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-xl font-bold gradient-text">Invoice to Tally XML</h1>
+          <span className="tag tag-gray">v3.2</span>
+        </div>
+        <NavBar active={page} onChange={(p) => { setPage(p); if (p === "dashboard") setRefreshKey((k) => k + 1); if (p === "clients") setRefreshKey((k) => k + 1); }} tallyStatus={tallyStatus} />
+        {page === "extract" ? (
+          <ExtractPage form={form} setForm={setForm} currentId={currentId} setCurrentId={setCurrentId} selectedClient={selectedClient} setSelectedClient={setSelectedClient} ledgers={ledgers} setLedgers={setLedgers} reviewConfirmed={reviewConfirmed} setReviewConfirmed={setReviewConfirmed} reviewErrors={reviewErrors} setReviewErrors={setReviewErrors} />
+        ) : page === "clients" ? (
+          <ClientPage refreshKey={refreshKey} />
+        ) : page === "banking" ? (
+          <BankingPage />
+        ) : page === "settings" ? (
+          <SettingsPage />
+        ) : (
+          <DashboardPage refreshKey={refreshKey} setRefreshKey={setRefreshKey} onEditInvoice={handleEditInvoice} />
+        )}
+      </div>
+    </div>
+    </ErrorBoundary>
+  );
+}

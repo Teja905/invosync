@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: invosync-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: invoice_tally
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  backend:
+    build:
+      context: ./backend
+    container_name: invosync-api
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGODB_URI: "mongodb://mongodb:27017"
+      COMPANY_NAME: "${COMPANY_NAME:-My Firm}"
+      COMPANY_GSTIN: "${COMPANY_GSTIN:-27AABCU1234F1ZP}"
+      COMPANY_STATE_CODE: "${COMPANY_STATE_CODE:-27}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      TDS_PAYABLE_LEDGER: "${TDS_PAYABLE_LEDGER:-TDS Payable}"
+      ROUND_OFF_LEDGER: "${ROUND_OFF_LEDGER:-Round Off}"
+      FREIGHT_LEDGER: "${FREIGHT_LEDGER:-Freight Expenses}"
+      BANK_LEDGER: "${BANK_LEDGER:-Bank}"
+      SUSPENSE_LEDGER: "${SUSPENSE_LEDGER:-Suspense}"
+      SALES_LEDGER: "${SALES_LEDGER:-Sales}"
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2
+    container_name: invosync-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  mongo_data:
+  caddy_data:
+  caddy_config:

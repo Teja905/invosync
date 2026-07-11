@@ -1,0 +1,45 @@
+{
+  "name": "InvoSyncTallyConnector",
+  "version": "1.0.0",
+  "description": "Local Windows service that pushes verified invoices from InvoSync cloud into Tally Prime",
+  "publisher": "InvoSync",
+  "install_type": "windows_service",
+  "service_name": "InvoSyncTallyConnector",
+  "display_name": "InvoSync Tally Connector",
+  "start_type": "automatic",
+  "dependencies": [ "http", "TallyPrime" ],
+  "tally": {
+    "default_host": "localhost",
+    "default_port": 9000,
+    "timeout_seconds": 60,
+    "max_retries": 3
+  },
+  "api": {
+    "poll_interval_seconds": 30,
+    "max_pending_batch": 50,
+    "sync_endpoint": "/api/v3/sync/pending",
+    "confirm_endpoint": "/api/v3/sync/confirm/{id}",
+    "error_endpoint": "/api/v3/sync/error/{id}"
+  },
+  "requirements": {
+    "os": "Windows 10+ or Windows Server 2019+",
+    "runtime": ".NET 8 Runtime (download: https://dotnet.microsoft.com/download/dotnet/8.0)",
+    "tally": "Tally Prime 3.0+ running on localhost:9000",
+    "ram_mb": 64,
+    "disk_mb": 20
+  },
+  "files": [
+    "InvoSyncTallyConnector.exe",
+    "appsettings.json",
+    "README.txt"
+  ],
+  "registry": {
+    "path": "HKLM\\Software\\InvoSync\\TallyConnector",
+    "keys": {
+      "ApiKey": "REG_SZ",
+      "TallyHost": "REG_SZ",
+      "TallyPort": "REG_DWORD",
+      "PollInterval": "REG_DWORD"
+    }
+  }
+}
