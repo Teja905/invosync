@@ -28,7 +28,24 @@ body {
   background: var(--bg-primary);
   min-height: 100vh;
   color: var(--text-primary);
+  background-image: radial-gradient(ellipse at 50% 0%, rgba(88, 166, 255, 0.03) 0%, transparent 60%),
+                    radial-gradient(ellipse at 80% 50%, rgba(188, 140, 255, 0.02) 0%, transparent 50%);
+  background-attachment: fixed;
 }
+
+/* Subtle grid pattern overlay */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: linear-gradient(rgba(48, 54, 61, 0.15) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(48, 54, 61, 0.15) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+#root { min-height: 100vh; position: relative; z-index: 1; }
 
 #root { min-height: 100vh; }
 

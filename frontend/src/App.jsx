@@ -77,15 +77,9 @@ function NavBar({ active, onChange, tallyStatus }) {
           ))}
         </div>
         <div className="gh-status">
-          <span className={`gh-status-dot ${
-            tallyStatus?.connected ? "green" :
-            tallyStatus?.connector_online ? "yellow" : "red"
-          }`} />
-          <span>
-            {tallyStatus?.connected ? `Tally: ${tallyStatus.company}` :
-             tallyStatus?.connector_online ? "Tally not detected" :
-             "Connector offline"}
-          </span>
+          <span className="gh-status-dot green" />
+          <span>Backend Online</span>
+          <span style={{color:"var(--text-tertiary)", fontSize:"11px", marginLeft:"4px"}}>v3.2</span>
         </div>
       </div>
     </div>
@@ -223,9 +217,15 @@ function ClientPage({ refreshKey }) {
       )}
 
       {clients.length === 0 ? (
-        <div className="glass-card p-12 text-center">
-          <p className="text-gray-400 text-lg">No clients yet.</p>
-          <p className="text-gray-500 text-sm mt-2">Add your first client to start processing invoices.</p>
+        <div className="gh-card" style={{padding:"48px 20px", textAlign:"center"}}>
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" style={{margin:"0 auto 16px", opacity:0.3}}>
+            <path d="M3 7V5a2 2 0 012-2h14a2 2 0 012 2v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M3 7h18" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M9 12h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+          <p style={{color:"var(--text-secondary)", fontSize:"16px", marginBottom:"4px"}}>No clients yet</p>
+          <p style={{color:"var(--text-tertiary)", fontSize:"13px"}}>Add your first client to start processing invoices.</p>
         </div>
       ) : (
         <div className="gh-card">
@@ -571,12 +571,16 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
             <p className="text-gray-400">Extracting invoice data...</p>
           </div>
         ) : isDragActive ? (
-          <p className="text-lg font-medium text-indigo-300">Drop invoice here</p>
+          <p style={{fontSize:"16px", fontWeight:500, color:"var(--accent-blue)"}}>Drop invoice here</p>
         ) : (
           <div>
-            <div className="text-4xl mb-3">{"\u{1F4C4}"}</div>
-            <p className="text-gray-300 font-medium">Drop invoice image or PDF here, or click to select</p>
-            <p className="text-xs text-gray-500 mt-1.5">Supports PNG, JPG, WebP</p>
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" style={{margin:"0 auto 16px", opacity:0.4}}>
+              <path d="M12 3v12m0 0l-3-3m3 3l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <rect x="3" y="15" width="18" height="2" rx="1" fill="currentColor" opacity="0.1"/>
+            </svg>
+            <p style={{color:"var(--text-secondary)", fontSize:"14px", fontWeight:500}}>Drop invoice image or PDF here</p>
+            <p style={{color:"var(--text-tertiary)", fontSize:"12px", marginTop:"4px"}}>or click to browse &bull; PNG, JPG, WebP, PDF</p>
           </div>
         )}
       </div>
@@ -608,11 +612,15 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
                   <div className="hidden items-center justify-center h-48 text-gray-500 text-sm"><span>Image not available</span></div>
                 </div>
               ) : (
-                <div className="flex items-center justify-center h-48 rounded-lg bg-white/5 border border-dashed border-white/10">
-                  <div className="text-center">
-                    <div className="text-3xl mb-2">{'\u{1F4C4}'}</div>
-                    <p className="text-sm text-gray-500">Invoice image</p>
-                    <p className="text-xs text-gray-600">Available after save</p>
+                <div style={{display:"flex", alignItems:"center", justifyContent:"center", height:"192px", background:"var(--bg-primary)", borderRadius:"6px", border:"1px dashed var(--border-primary)"}}>
+                  <div style={{textAlign:"center"}}>
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" style={{margin:"0 auto 8px", opacity:0.3}}>
+                      <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+                      <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" opacity="0.5"/>
+                      <path d="M3 16l4-4 3 3 5-5 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    <p style={{fontSize:"13px", color:"var(--text-tertiary)"}}>Invoice preview</p>
+                    <p style={{fontSize:"11px", color:"var(--text-tertiary)", opacity:0.6}}>shown after extraction</p>
                   </div>
                 </div>
               )}
