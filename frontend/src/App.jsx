@@ -61,6 +61,22 @@ function NavBar({ active, onChange, tallyStatus }) {
     { key: "settings", label: "Settings" },
   ];
 
+  function dotColor() {
+    if (!tallyStatus) return "grey";
+    if (tallyStatus.connector_online && tallyStatus.tally_reachable) return "green";
+    if (tallyStatus.connector_online && !tallyStatus.tally_reachable) return "yellow";
+    return "red";
+  }
+
+  function statusText() {
+    if (!tallyStatus) return "Connecting...";
+    if (tallyStatus.connector_online && tallyStatus.tally_reachable)
+      return `Tally: ${tallyStatus.company || "Connected"}`;
+    if (tallyStatus.connector_online && !tallyStatus.tally_reachable)
+      return "Tally not detected — open Tally Prime (F1 → Settings → Connectivity → Port 9000)";
+    return "Connector offline — run InvoSync.exe on this PC";
+  }
+
   return (
     <div className="gh-header">
       <div className="gh-header-inner">
@@ -76,9 +92,9 @@ function NavBar({ active, onChange, tallyStatus }) {
             </button>
           ))}
         </div>
-        <div className="gh-status">
-          <span className="gh-status-dot green" />
-          <span>Backend Online</span>
+        <div className="gh-status" title={statusText()}>
+          <span className={`gh-status-dot ${dotColor()}`} />
+          <span className="gh-status-label">{statusText()}</span>
           <span style={{color:"var(--text-tertiary)", fontSize:"11px", marginLeft:"4px"}}>v3.2</span>
         </div>
       </div>
@@ -731,10 +747,10 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
                       </label>
                       <select className="input text-sm" value={ledgers[i] || ""} onChange={(e) => { const l = [...ledgers]; l[i] = e.target.value; setLedgers(l); }}>
                         <option value="">-- Select ledger --</option>
-                        {tallyLedgers.length > 0 && <optgroup label="From Tally">
+                        {tallyLedgers.length > 0 && <optgroup label="Live From Tally Prime ERP">
                           {tallyLedgers.map((l) => <option key={l} value={l}>{l}</option>)}
                         </optgroup>}
-                        <optgroup label="Common">
+                        <optgroup label="Common Ledgers">
                           {COMMON_LEDGERS.map((l) => <option key={l} value={l}>{l}</option>)}
                         </optgroup>
                       </select>
@@ -1262,6 +1278,17 @@ function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [tallyLedgers, setTallyLedgers] = useState([]);
+
+  function ledgerMismatch(name) {
+    if (!name || tallyLedgers.length === 0) return false;
+    return !tallyLedgers.some((l) => l.toLowerCase().trim() === name.toLowerCase().trim());
+  }
+
+  useEffect(() => {
+    fetch(`${BACKEND}/api/v3/sync/ledgers`, { headers: getAuthHeaders() })
+      .then((r) => r.json()).then((d) => setTallyLedgers(d.ledgers || [])).catch(() => {});
+  }, []);
 
   async function handleSave(e) {
     e.preventDefault();
@@ -1316,19 +1343,33 @@ function SettingsPage() {
           </div>
         </div>
         <div className="pt-2 border-t border-white/5">
-          <p className="text-xs text-gray-500 mb-3">Tally Ledger Names (must match your Tally Chart of Accounts)</p>
+          <p className="text-xs text-gray-500 mb-3">Tally Ledger Names (must match your Tally Chart of Accounts)
+            {tallyLedgers.length > 0 && <span className="text-green-400/70 ml-2">({tallyLedgers.length} synced from Tally)</span>}
+          </p>
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="text-xs text-gray-500 mb-1 block">Purchase Ledger</label>
-              <input className="input w-full text-sm" value={purchaseLedger} onChange={(e) => setPurchaseLedger(e.target.value)} />
+              <div className="relative">
+                <input className="input w-full text-sm" value={purchaseLedger} onChange={(e) => setPurchaseLedger(e.target.value)} />
+                {ledgerMismatch(purchaseLedger) && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 text-xs font-bold" title={"Not found in Tally: " + purchaseLedger}>{'\u26A0'}</span>}
+              </div>
+              {ledgerMismatch(purchaseLedger) && <p className="text-[10px] text-yellow-400/80 mt-0.5">{'\u26A0'} Not found in Tally's Chart of Accounts</p>}
             </div>
             <div>
               <label className="text-xs text-gray-500 mb-1 block">Sales Ledger</label>
-              <input className="input w-full text-sm" value={salesLedger} onChange={(e) => setSalesLedger(e.target.value)} />
+              <div className="relative">
+                <input className="input w-full text-sm" value={salesLedger} onChange={(e) => setSalesLedger(e.target.value)} />
+                {ledgerMismatch(salesLedger) && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 text-xs font-bold" title={"Not found in Tally: " + salesLedger}>{'\u26A0'}</span>}
+              </div>
+              {ledgerMismatch(salesLedger) && <p className="text-[10px] text-yellow-400/80 mt-0.5">{'\u26A0'} Not found in Tally's Chart of Accounts</p>}
             </div>
             <div>
               <label className="text-xs text-gray-500 mb-1 block">Bank Ledger</label>
-              <input className="input w-full text-sm" value={bankLedger} onChange={(e) => setBankLedger(e.target.value)} />
+              <div className="relative">
+                <input className="input w-full text-sm" value={bankLedger} onChange={(e) => setBankLedger(e.target.value)} />
+                {ledgerMismatch(bankLedger) && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 text-xs font-bold" title={"Not found in Tally: " + bankLedger}>{'\u26A0'}</span>}
+              </div>
+              {ledgerMismatch(bankLedger) && <p className="text-[10px] text-yellow-400/80 mt-0.5">{'\u26A0'} Not found in Tally's Chart of Accounts</p>}
             </div>
           </div>
         </div>
