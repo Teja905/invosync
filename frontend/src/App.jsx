@@ -529,10 +529,11 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
       freight: form.freight != null ? parseFloat(form.freight) : 0,
       round_off: form.round_off != null ? parseFloat(form.round_off) : 0,
       tds_amount: form.tds_amount != null ? parseFloat(form.tds_amount) : 0,
-      line_items: form.line_items.map((item) => ({
+      line_items: form.line_items.map((item, idx) => ({
         description: item.description, quantity: parseFloat(item.quantity),
         rate: parseFloat(item.rate || 0), taxable_value: parseFloat(item.taxable_value),
         tax_rate: parseFloat(item.tax_rate || 0),
+        ledger_name: ledgers[idx] || "",
       })),
       item_ledgers: ledgers,
     };
@@ -718,7 +719,7 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
             <div className="pt-2">
               <div className="flex items-center justify-between mb-3">
                 <label className="text-sm font-medium text-gray-300">Line Items</label>
-                <button onClick={() => { setForm((p) => ({ ...p, line_items: [...p.line_items, { description: "", quantity: 1, rate: 0, taxable_value: 0, tax_rate: 0 }] })); setLedgers((p) => [...p, ""]); }} className="btn-secondary text-xs px-3 py-1.5">+ Add Item</button>
+                <button onClick={() => { setForm((p) => ({ ...p, line_items: [...p.line_items, { description: "", quantity: 1, rate: 0, taxable_value: 0, tax_rate: 0, ledger_name: "" }] })); setLedgers((p) => [...p, ""]); }} className="btn-secondary text-xs px-3 py-1.5">+ Add Item</button>
               </div>
               {errors.line_items && <p className="text-red-400 text-xs mb-2">{errors.line_items}</p>}
               {form.line_items.map((item, i) => (

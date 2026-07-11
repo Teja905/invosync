@@ -1115,7 +1115,7 @@ async def update_invoice(invoice_id: int, data: InvoiceUpdatePayload, current_us
         "freight": raw.get("freight", 0),
         "round_off": raw.get("round_off", 0),
         "tds_amount": raw.get("tds_amount", 0),
-        "line_items": [{"description": li.description, "quantity": li.quantity, "rate": li.rate, "taxable_value": li.taxable_value, "tax_rate": li.tax_rate} for li in data.line_items],
+        "line_items": [{"description": li.description, "quantity": li.quantity, "rate": li.rate, "taxable_value": li.taxable_value, "tax_rate": li.tax_rate, "ledger_name": li.ledger_name} for li in data.line_items],
     }
     set_fields = {"extracted": extracted_update}
     if raw.get("item_ledgers"):
@@ -1148,7 +1148,7 @@ async def confirm_review(invoice_id: int, data: InvoiceUpdatePayload, current_us
         "freight": raw.get("freight", 0),
         "round_off": raw.get("round_off", 0),
         "tds_amount": raw.get("tds_amount", 0),
-        "line_items": [{"description": li.description, "quantity": li.quantity, "rate": li.rate, "taxable_value": li.taxable_value, "tax_rate": li.tax_rate} for li in data.line_items],
+        "line_items": [{"description": li.description, "quantity": li.quantity, "rate": li.rate, "taxable_value": li.taxable_value, "tax_rate": li.tax_rate, "ledger_name": li.ledger_name} for li in data.line_items],
     }
 
     # Mandatory checks before confirming review

@@ -49,6 +49,7 @@ class LineItem(BaseModel):
     is_service: bool = False
     discount: float = 0.0
     unit: str = "Nos"
+    ledger_name: str = ""
 
     @field_validator("description", "hsn_sac", "unit", mode="before")
     @classmethod

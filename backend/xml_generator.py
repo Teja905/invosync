@@ -443,6 +443,14 @@ class TallyXmlGenerator:
         if inv.round_off != 0:
             add_once(self.config.get_round_off_ledger(), self.config.get_purchase_accounts_group())
 
+        # -- Auto-create ANY ledger referenced in line items not yet created --
+        for item in inv.line_items:
+            ln = item.ledger_name.strip() if item.ledger_name.strip() else ""
+            if not ln:
+                ln = self.ledger_engine.map_expense_ledger(item.description)
+            if ln and ln not in seen:
+                add_once(ln, "Primary")
+
         return ledgers
 
     @staticmethod
@@ -665,7 +673,7 @@ class TallyXmlGenerator:
             for item in inv.line_items:
                 if not item.is_service or item.taxable_value <= 0:
                     continue
-                led = self.ledger_engine.map_expense_ledger(item.description)
+                led = (item.ledger_name.strip() or self.ledger_engine.map_expense_ledger(item.description))
                 ledger_amounts[led] = ledger_amounts.get(led, 0) + item.taxable_value
             if not ledger_amounts:
                 ledger_amounts[purchase_ledger] = inv.total_taxable_value
