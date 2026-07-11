@@ -1343,33 +1343,56 @@ function SettingsPage() {
           </div>
         </div>
         <div className="pt-2 border-t border-white/5">
-          <p className="text-xs text-gray-500 mb-3">Tally Ledger Names (must match your Tally Chart of Accounts)
-            {tallyLedgers.length > 0 && <span className="text-green-400/70 ml-2">({tallyLedgers.length} synced from Tally)</span>}
+          <p className="text-xs text-gray-500 mb-3">Default Tally Ledgers for XML export
+            {tallyLedgers.length > 0 && <span className="text-green-400/70 ml-2">({tallyLedgers.length} ledgers synced from Tally)</span>}
           </p>
+          {tallyLedgers.length === 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 mb-3">
+              <p className="text-xs text-amber-300">{'\u26A0'} No ledgers synced yet. Download and run the Tally Connector (below) to pull your live Chart of Accounts.</p>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="text-xs text-gray-500 mb-1 block">Purchase Ledger</label>
+              <label className="text-xs text-gray-500 mb-1 block">Default Purchase Ledger</label>
               <div className="relative">
-                <input className="input w-full text-sm" value={purchaseLedger} onChange={(e) => setPurchaseLedger(e.target.value)} />
-                {ledgerMismatch(purchaseLedger) && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 text-xs font-bold" title={"Not found in Tally: " + purchaseLedger}>{'\u26A0'}</span>}
+                {tallyLedgers.length > 0 ? (
+                  <select className="input w-full text-sm" value={purchaseLedger} onChange={(e) => setPurchaseLedger(e.target.value)}>
+                    <option value="">-- Select --</option>
+                    {tallyLedgers.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                ) : (
+                  <input className="input w-full text-sm" value={purchaseLedger} onChange={(e) => setPurchaseLedger(e.target.value)} placeholder="e.g. Purchase Accounts" />
+                )}
+                {tallyLedgers.length > 0 && ledgerMismatch(purchaseLedger) && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 text-xs font-bold">{'\u26A0'}</span>}
               </div>
-              {ledgerMismatch(purchaseLedger) && <p className="text-[10px] text-yellow-400/80 mt-0.5">{'\u26A0'} Not found in Tally's Chart of Accounts</p>}
             </div>
             <div>
-              <label className="text-xs text-gray-500 mb-1 block">Sales Ledger</label>
+              <label className="text-xs text-gray-500 mb-1 block">Default Sales Ledger</label>
               <div className="relative">
-                <input className="input w-full text-sm" value={salesLedger} onChange={(e) => setSalesLedger(e.target.value)} />
-                {ledgerMismatch(salesLedger) && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 text-xs font-bold" title={"Not found in Tally: " + salesLedger}>{'\u26A0'}</span>}
+                {tallyLedgers.length > 0 ? (
+                  <select className="input w-full text-sm" value={salesLedger} onChange={(e) => setSalesLedger(e.target.value)}>
+                    <option value="">-- Select --</option>
+                    {tallyLedgers.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                ) : (
+                  <input className="input w-full text-sm" value={salesLedger} onChange={(e) => setSalesLedger(e.target.value)} placeholder="e.g. Sales Accounts" />
+                )}
+                {tallyLedgers.length > 0 && ledgerMismatch(salesLedger) && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 text-xs font-bold">{'\u26A0'}</span>}
               </div>
-              {ledgerMismatch(salesLedger) && <p className="text-[10px] text-yellow-400/80 mt-0.5">{'\u26A0'} Not found in Tally's Chart of Accounts</p>}
             </div>
             <div>
-              <label className="text-xs text-gray-500 mb-1 block">Bank Ledger</label>
+              <label className="text-xs text-gray-500 mb-1 block">Default Bank Ledger</label>
               <div className="relative">
-                <input className="input w-full text-sm" value={bankLedger} onChange={(e) => setBankLedger(e.target.value)} />
-                {ledgerMismatch(bankLedger) && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 text-xs font-bold" title={"Not found in Tally: " + bankLedger}>{'\u26A0'}</span>}
+                {tallyLedgers.length > 0 ? (
+                  <select className="input w-full text-sm" value={bankLedger} onChange={(e) => setBankLedger(e.target.value)}>
+                    <option value="">-- Select --</option>
+                    {tallyLedgers.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                ) : (
+                  <input className="input w-full text-sm" value={bankLedger} onChange={(e) => setBankLedger(e.target.value)} placeholder="e.g. Bank" />
+                )}
+                {tallyLedgers.length > 0 && ledgerMismatch(bankLedger) && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 text-xs font-bold">{'\u26A0'}</span>}
               </div>
-              {ledgerMismatch(bankLedger) && <p className="text-[10px] text-yellow-400/80 mt-0.5">{'\u26A0'} Not found in Tally's Chart of Accounts</p>}
             </div>
           </div>
         </div>
