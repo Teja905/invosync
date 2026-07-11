@@ -9,7 +9,7 @@ builder.Services.AddSingleton<TallyLedgerSyncer>();
 builder.Services.AddHttpClient("InvoSync", c =>
 {
     var cfg = builder.Configuration.GetSection("InvoSync");
-    c.BaseAddress = new Uri(cfg["ApiBaseUrl"] ?? "http://localhost:8000");
+    c.BaseAddress = new Uri(cfg["ApiBaseUrl"] ?? "https://invosync-backend-yjfa.onrender.com");
     c.DefaultRequestHeaders.Add("X-API-Key", cfg["ApiKey"] ?? "");
 });
 builder.Services.AddHttpClient("Tally", c =>
