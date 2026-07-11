@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import { useAuth } from "./auth";
+import gsap from "gsap";
 
 const BACKEND = import.meta.env.VITE_API_URL || "";
 
@@ -41,13 +42,13 @@ function safeJson(r) {
 
 function Field({ label, error, children, optional }) {
   return (
-    <div className="animate-fadeIn">
-      <label className="block text-sm font-medium text-gray-300 mb-1.5">
+    <div>
+      <label className="gh-label">
         {label}
-        {optional && <span className="text-gray-500 font-normal ml-1">(optional)</span>}
+        {optional && <span className="gh-label-optional">(optional)</span>}
       </label>
       {children}
-      {error && <p className="text-red-400 text-xs mt-1.5 flex items-center gap-1"><span>&#9888;</span>{error}</p>}
+      {error && <p className="gh-error"><span>&#9888;</span>{error}</p>}
     </div>
   );
 }
@@ -57,35 +58,35 @@ function NavBar({ active, onChange, tallyStatus }) {
     { key: "extract", label: "Extract" },
     { key: "clients", label: "Clients" },
     { key: "dashboard", label: "Dashboard" },
-    // { key: "banking", label: "Banking" },  // V2 — bank statement automation
     { key: "settings", label: "Settings" },
   ];
 
   return (
-    <div className="glass rounded-2xl px-5 py-3 mb-6 flex items-center justify-between animate-slideUp">
-      <div className="flex gap-1">
-        {tabs.map((t) => (
-          <button key={t.key} onClick={() => onChange(t.key)}
-            className={`px-4 py-2 text-sm font-medium rounded-xl transition-all duration-300 ${
-              active === t.key
-                ? "bg-gradient-to-r from-indigo-500/20 to-purple-500/20 text-white shadow-lg shadow-indigo-500/10 border border-indigo-400/20"
-                : "text-gray-400 hover:text-gray-200 hover:bg-white/5"
-            }`}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-      <div className="flex items-center gap-2 text-xs max-w-[320px]">
-        <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${
-          tallyStatus?.connected ? "bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]" :
-          tallyStatus?.connector_online ? "bg-yellow-400 shadow-[0_0_6px_rgba(250,204,21,0.5)]" :
-          "bg-red-400/60"
-        }`} />
-        <span className="text-gray-500 leading-tight">
-          {tallyStatus?.connected ? `Tally: ${tallyStatus.company}` :
-           tallyStatus?.connector_online ? "Tally not detected — open Tally Prime, set F1→Settings→Connectivity→Port 9000" :
-           "Connector offline — run InvoSync.exe on this PC"}
-        </span>
+    <div className="gh-header">
+      <div className="gh-header-inner">
+        <div className="gh-logo">
+          <div className="gh-logo-icon">I</div>
+          <span>InvoSync</span>
+        </div>
+        <div className="gh-tabs">
+          {tabs.map((t) => (
+            <button key={t.key} onClick={() => onChange(t.key)}
+              className={`gh-tab ${active === t.key ? "active" : ""}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="gh-status">
+          <span className={`gh-status-dot ${
+            tallyStatus?.connected ? "green" :
+            tallyStatus?.connector_online ? "yellow" : "red"
+          }`} />
+          <span>
+            {tallyStatus?.connected ? `Tally: ${tallyStatus.company}` :
+             tallyStatus?.connector_online ? "Tally not detected" :
+             "Connector offline"}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -227,25 +228,25 @@ function ClientPage({ refreshKey }) {
           <p className="text-gray-500 text-sm mt-2">Add your first client to start processing invoices.</p>
         </div>
       ) : (
-        <div className="glass-card overflow-hidden">
-          <table className="w-full text-sm">
-            <thead><tr className="border-b border-white/5 text-left text-xs text-gray-500 uppercase">
-              <th className="px-4 py-3.5 font-medium">Company</th>
-              <th className="px-4 py-3.5 font-medium">Contact</th>
-              <th className="px-4 py-3.5 font-medium">GSTIN</th>
-              <th className="px-4 py-3.5 font-medium text-center">Invoices</th>
-              <th className="px-4 py-3.5 font-medium text-right">Action</th>
+        <div className="gh-card">
+          <table className="gh-table">
+            <thead><tr>
+              <th>Company</th>
+              <th>Contact</th>
+              <th>GSTIN</th>
+              <th>Invoices</th>
+              <th>Action</th>
             </tr></thead>
-            <tbody className="divide-y divide-white/5">
+            <tbody>
               {clients.map((c) => (
                 <tr key={c.client_id} className="table-row">
-                  <td className="px-4 py-3.5 font-medium text-gray-200">{c.company_name}</td>
-                  <td className="px-4 py-3.5 text-gray-300">{c.client_name}</td>
-                  <td className="px-4 py-3.5 font-mono text-xs text-gray-400">{c.gstin || <span className="text-gray-600">N/A</span>}</td>
-                  <td className="px-4 py-3.5 text-center text-gray-400">{c.invoice_count || 0}</td>
-                  <td className="px-4 py-3.5 text-right flex justify-end gap-2">
-                    <button onClick={() => startEdit(c)} className="text-xs text-indigo-400 hover:text-indigo-300">Edit</button>
-                    <button onClick={() => deleteClient(c.client_id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                  <td>{c.company_name}</td>
+                  <td>{c.client_name}</td>
+                  <td className="font-mono text-xs">{c.gstin || <span className="text-tertiary">N/A</span>}</td>
+                  <td>{c.invoice_count || 0}</td>
+                  <td className="flex gap-2">
+                    <button onClick={() => startEdit(c)} className="text-xs" style={{color:"var(--accent-blue)"}}>Edit</button>
+                    <button onClick={() => deleteClient(c.client_id)} className="text-xs" style={{color:"var(--accent-red)"}}>Delete</button>
                   </td>
                 </tr>
               ))}
@@ -551,20 +552,18 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
 
   return (
     <div className="space-y-5 animate-fadeIn">
-      <div className="glass rounded-xl px-4 py-3 flex items-center gap-3">
-        <label className="text-sm text-gray-300 whitespace-nowrap">Client:</label>
-        <select className="input flex-1" value={selectedClient} onChange={(e) => setSelectedClient(e.target.value)}>
+      <div className="gh-card" style={{display:"flex", alignItems:"center", gap:"12px", padding:"12px 16px"}}>
+        <span className="gh-label" style={{margin:0, whiteSpace:"nowrap"}}>Client:</span>
+        <select className="gh-input" value={selectedClient} onChange={(e) => setSelectedClient(e.target.value)}>
           <option value="">-- Select a client --</option>
           {clients.map((c) => (
             <option key={c.client_id} value={c.client_id}>{c.company_name} ({c.client_name})</option>
           ))}
         </select>
-        {clients.length === 0 && <span className="text-xs text-yellow-400">Add clients first</span>}
+        {clients.length === 0 && <span className="gh-tag gh-tag-yellow" style={{whiteSpace:"nowrap"}}>Add clients first</span>}
       </div>
 
-      <div {...getRootProps()} className={`rounded-xl p-12 text-center cursor-pointer transition-all duration-300 border-2 border-dashed ${
-        isDragActive ? "border-indigo-400 dropzone-active scale-[1.01]" : "glass-card border-white/10 hover:border-white/20"
-      }`}>
+      <div {...getRootProps()} className={`gh-dropzone ${isDragActive ? "active" : ""}`}>
         <input {...getInputProps()} />
         {extracting ? (
           <div className="flex flex-col items-center gap-3">
@@ -583,16 +582,16 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
       </div>
 
       {errors._general && (
-        <div className="glass rounded-xl p-4 border border-red-500/20 flex items-start gap-3 animate-fadeIn">
-          <span className="text-red-400 mt-0.5">&#9888;</span>
-          <p className="text-sm text-red-300">{errors._general}</p>
+        <div className="gh-alert gh-alert-error animate-fadeIn">
+          <span>&#9888;</span>
+          <span>{errors._general}</span>
         </div>
       )}
 
       {dupWarning && (
-        <div className="glass rounded-xl p-4 border border-yellow-500/20 flex items-start gap-3 animate-fadeIn">
-          <span className="text-yellow-400 mt-0.5">&#9888;</span>
-          <p className="text-sm text-yellow-300">{typeof dupWarning === "string" ? dupWarning : dupWarning.message}</p>
+        <div className="gh-alert gh-alert-warning animate-fadeIn">
+          <span>&#9888;</span>
+          <span>{typeof dupWarning === "string" ? dupWarning : dupWarning.message}</span>
         </div>
       )}
 
@@ -601,8 +600,8 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
       {showForm && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 animate-slideUp" style={{ animationDelay: "0.1s" }}>
           <div className="space-y-4">
-            <div className="glass-card p-4">
-              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-3">Invoice Document</h3>
+            <div className="gh-card" style={{padding:"16px"}}>
+              <h3 className="text-xs font-medium uppercase tracking-wider mb-3" style={{color:"var(--text-secondary)", letterSpacing:"0.5px"}}>Invoice Document</h3>
               {imageUrl ? (
                 <div className="rounded-lg overflow-hidden bg-black/20">
                   <img src={imageUrl} alt="Invoice" className="w-full h-auto object-contain max-h-[600px]" onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
@@ -641,9 +640,9 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
             )}
           </div>
 
-          <div className="glass-card p-6 space-y-4">
-            <div className="flex items-center justify-between mb-1">
-              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Extracted Fields</h3>
+          <div className="gh-card" style={{padding:"20px"}}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-medium uppercase tracking-wider" style={{color:"var(--text-secondary)", letterSpacing:"0.5px"}}>Extracted Fields</h3>
               {(form.confidence != null && form.confidence < 0.7) && (
                 <span className="tag tag-yellow text-[10px]">{'\u26A0'} Needs Review</span>
               )}
@@ -813,47 +812,47 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
       )}
 
       {showValModal && valModalData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowValModal(false)}>
-          <div className="glass-card max-w-lg w-full mx-4 p-6 space-y-4 animate-slideUp" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-gray-200">Validation Results</h3>
-              <button onClick={() => setShowValModal(false)} className="text-gray-500 hover:text-gray-300 text-xl">&times;</button>
+        <div className="gh-modal-overlay" onClick={() => setShowValModal(false)}>
+          <div className="gh-modal" style={{padding:"24px"}} onClick={(e) => e.stopPropagation()}>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"16px"}}>
+              <h3 style={{fontSize:"16px", fontWeight:600}}>Validation Results</h3>
+              <button onClick={() => setShowValModal(false)} style={{color:"var(--text-tertiary)", background:"none", border:"none", fontSize:"20px", cursor:"pointer"}}>&times;</button>
             </div>
 
             {valModalData.warnings.length > 0 && (
-              <div className="space-y-1">
-                <p className="text-xs font-medium text-yellow-400">Warnings</p>
+              <div style={{marginBottom:"12px"}}>
+                <p className="gh-tag gh-tag-yellow" style={{marginBottom:"6px"}}>Warnings</p>
                 {valModalData.warnings.map((w, i) => (
-                  <p key={i} className="text-xs text-yellow-300/80 pl-2 border-l-2 border-yellow-500/30">{w}</p>
+                  <p key={i} style={{fontSize:"12px", color:"var(--accent-yellow)", paddingLeft:"8px", borderLeft:"2px solid rgba(210,153,34,0.3)", marginBottom:"4px"}}>{w}</p>
                 ))}
               </div>
             )}
 
             {valModalData.soft.length > 0 && (
-              <div className="space-y-1">
-                <p className="text-xs font-medium text-orange-400">Soft Errors (overridable)</p>
+              <div style={{marginBottom:"12px"}}>
+                <p className="gh-tag gh-tag-yellow" style={{marginBottom:"6px"}}>Soft Errors (overridable)</p>
                 {valModalData.soft.map((e, i) => (
-                  <p key={i} className="text-xs text-orange-300/80 pl-2 border-l-2 border-orange-500/30">{e}</p>
+                  <p key={i} style={{fontSize:"12px", color:"var(--accent-yellow)", paddingLeft:"8px", borderLeft:"2px solid rgba(210,153,34,0.3)", marginBottom:"4px"}}>{e}</p>
                 ))}
               </div>
             )}
 
             {valModalData.blocking.length > 0 && (
-              <div className="space-y-1">
-                <p className="text-xs font-medium text-red-400">Blocking Errors</p>
+              <div style={{marginBottom:"16px"}}>
+                <p className="gh-tag gh-tag-red" style={{marginBottom:"6px"}}>Blocking Errors</p>
                 {valModalData.blocking.map((e, i) => (
-                  <p key={i} className="text-xs text-red-300/80 pl-2 border-l-2 border-red-500/30">{e}</p>
+                  <p key={i} style={{fontSize:"12px", color:"var(--accent-red)", paddingLeft:"8px", borderLeft:"2px solid rgba(248,81,73,0.3)", marginBottom:"4px"}}>{e}</p>
                 ))}
               </div>
             )}
 
-            <div className="flex gap-3 pt-2">
+            <div style={{display:"flex", gap:"8px", paddingTop:"8px"}}>
               <button onClick={() => { setShowValModal(false); downloadXML(true); }}
-                className="btn-primary flex-1 py-2.5 text-sm">
+                className="gh-btn gh-btn-primary" style={{flex:1, justifyContent:"center", padding:"10px"}}>
                 Generate Anyway
               </button>
               <button onClick={() => setShowValModal(false)}
-                className="btn-secondary flex-1 py-2.5 text-sm">
+                className="gh-btn gh-btn-secondary" style={{flex:1, justifyContent:"center", padding:"10px"}}>
                 Back to Edit
               </button>
             </div>
@@ -874,24 +873,23 @@ function ValidationSummary({ validation }) {
   const blockingErrors = validation.blocking_errors || [];
   const statutoryChecks = ["statutory_routing", "gst_structure", "gstin", "tax_rates"];
   return (
-    <div className="glass-card p-5 space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">Document:</span>
-          <span className="text-sm font-semibold text-gray-200 capitalize">{(validation.document_type || "unknown").replace(/_/g, " ")}</span>
+    <div className="gh-card" style={{padding:"16px"}}>
+      <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"12px"}}>
+        <div style={{display:"flex", alignItems:"center", gap:"8px"}}>
+          <span style={{fontSize:"12px", color:"var(--text-secondary)"}}>Document:</span>
+          <span style={{fontSize:"13px", fontWeight:600, textTransform:"capitalize"}}>{(validation.document_type || "unknown").replace(/_/g, " ")}</span>
         </div>
-        <span className={`tag ${validation.passed ? "tag-green" : "tag-red"}`}>
+        <span className={`gh-tag ${validation.passed ? "gh-tag-green" : "gh-tag-red"}`}>
           {validation.passed ? "PASS" : "FAIL"}
         </span>
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div style={{display:"flex", flexWrap:"wrap", gap:"6px", marginBottom:"12px"}}>
         {checks.map(([name, result]) => {
           const isStatutory = statutoryChecks.includes(name);
           return (
-            <div key={name} className={`tag tag-sm text-xs relative ${
-              result.pass ? (result.warnings?.length ? "tag-yellow" : isStatutory ? "tag-blue" : "tag-green") : "tag-red"
-            } ${isStatutory ? "ring-1 ring-blue-400/40" : ""}`}>
-              {isStatutory && <span className="text-[9px] uppercase tracking-wider text-blue-300 mr-1" title="CGST Act 2017">\u2696</span>}
+            <div key={name} className={`gh-tag ${
+              result.pass ? (result.warnings?.length ? "gh-tag-yellow" : isStatutory ? "gh-tag-blue" : "gh-tag-green") : "gh-tag-red"
+            }`}>
               <span>{result.pass ? (result.warnings?.length ? "\u26A0" : "\u2713") : "\u2717"}</span>
               <span className="capitalize">{name.replace(/_/g, " ")}</span>
             </div>
@@ -899,26 +897,26 @@ function ValidationSummary({ validation }) {
         })}
       </div>
       {warnings.length > 0 && (
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-yellow-400">Warnings</p>
+        <div style={{marginBottom:"8px"}}>
+          <p className="gh-tag gh-tag-yellow" style={{marginBottom:"6px"}}>Warnings</p>
           {warnings.map((w, i) => (
-            <p key={i} className="text-xs text-yellow-300/80 pl-2 border-l-2 border-yellow-500/30">{w}</p>
+            <p key={i} style={{fontSize:"12px", color:"var(--accent-yellow)", paddingLeft:"8px", borderLeft:"2px solid rgba(210,153,34,0.3)", marginBottom:"4px"}}>{w}</p>
           ))}
         </div>
       )}
       {softErrors.length > 0 && (
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-orange-400">Soft Errors (overridable)</p>
+        <div style={{marginBottom:"8px"}}>
+          <p className="gh-tag gh-tag-yellow" style={{marginBottom:"6px"}}>Soft Errors</p>
           {softErrors.map((e, i) => (
-            <p key={i} className="text-xs text-orange-300/80 pl-2 border-l-2 border-orange-500/30">{e}</p>
+            <p key={i} style={{fontSize:"12px", color:"var(--accent-yellow)", paddingLeft:"8px", borderLeft:"2px solid rgba(210,153,34,0.3)", marginBottom:"4px"}}>{e}</p>
           ))}
         </div>
       )}
       {blockingErrors.length > 0 && (
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-red-400">Blocking Errors</p>
+        <div>
+          <p className="gh-tag gh-tag-red" style={{marginBottom:"6px"}}>Blocking Errors</p>
           {blockingErrors.map((e, i) => (
-            <p key={i} className="text-xs text-red-300/80 pl-2 border-l-2 border-red-500/30">{e}</p>
+            <p key={i} style={{fontSize:"12px", color:"var(--accent-red)", paddingLeft:"8px", borderLeft:"2px solid rgba(248,81,73,0.3)", marginBottom:"4px"}}>{e}</p>
           ))}
         </div>
       )}
@@ -1615,16 +1613,22 @@ export default function App() {
     }
   }
 
+  const pageRef = useRef(null);
+
+  useEffect(() => {
+    if (pageRef.current) {
+      gsap.fromTo(pageRef.current,
+        { opacity: 0, y: 20 },
+        { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }
+      );
+    }
+  }, [page]);
+
   return (
     <ErrorBoundary>
     <div className="min-h-screen">
-      <div className="orb-1 bg-orb" /><div className="orb-2 bg-orb" /><div className="orb-3 bg-orb" />
-      <div className="max-w-5xl mx-auto px-6 py-6">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-xl font-bold gradient-text">Invoice to Tally XML</h1>
-          <span className="tag tag-gray">v3.2</span>
-        </div>
-        <NavBar active={page} onChange={(p) => { setPage(p); if (p === "dashboard") setRefreshKey((k) => k + 1); if (p === "clients") setRefreshKey((k) => k + 1); }} tallyStatus={tallyStatus} />
+      <NavBar active={page} onChange={(p) => { setPage(p); if (p === "dashboard") setRefreshKey((k) => k + 1); if (p === "clients") setRefreshKey((k) => k + 1); }} tallyStatus={tallyStatus} />
+      <div className="gh-page" ref={pageRef}>
         {page === "extract" ? (
           <ExtractPage form={form} setForm={setForm} currentId={currentId} setCurrentId={setCurrentId} selectedClient={selectedClient} setSelectedClient={setSelectedClient} ledgers={ledgers} setLedgers={setLedgers} reviewConfirmed={reviewConfirmed} setReviewConfirmed={setReviewConfirmed} reviewErrors={reviewErrors} setReviewErrors={setReviewErrors} />
         ) : page === "clients" ? (
