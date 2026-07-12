@@ -27,6 +27,9 @@ public class InvoiceDto
 
     [JsonPropertyName("xml_content")]
     public string? XmlContent { get; set; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
 }
 
 public class PendingResponse
