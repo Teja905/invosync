@@ -57,7 +57,7 @@ public class TallyCompanySyncer
     }
 
     /// <summary>Reports connector liveness to backend, even when Tally is offline.</summary>
-    public async Task ReportConnectorAliveAsync(bool tallyReachable, CancellationToken ct, List<string>? companies = null)
+    public async Task ReportConnectorAliveAsync(bool tallyReachable, CancellationToken ct, List<string>? companies = null, string activeCompany = "")
     {
         try
         {
@@ -65,6 +65,7 @@ public class TallyCompanySyncer
             {
                 tally_reachable = tallyReachable,
                 companies = companies ?? new List<string>(),
+                active_company = activeCompany,
                 connector_version = "1.0.0",
             });
             var jsonContent = new StringContent(payload, Encoding.UTF8, "application/json");
@@ -79,7 +80,8 @@ public class TallyCompanySyncer
         }
     }
 
-    public async Task SyncOpenCompaniesAsync(CancellationToken ct)
+    /// <summary>Fetches open companies from Tally, syncs to backend, and returns the list.</summary>
+    public async Task<List<string>> SyncOpenCompaniesAsync(CancellationToken ct, string activeCompany = "")
     {
         var tally = _httpFactory.CreateClient("Tally");
         var requestXml = @"<ENVELOPE>
@@ -94,19 +96,19 @@ public class TallyCompanySyncer
             if (!resp.IsSuccessStatusCode)
             {
                 _log.LogWarning("Tally company list request failed: {Status}", resp.StatusCode);
-                return;
+                return new List<string>();
             }
 
             var xml = await resp.Content.ReadAsStringAsync(ct);
             var companies = ParseTallyCompanies(xml);
 
-            if (companies.Count == 0)
+            var payload = JsonSerializer.Serialize(new
             {
-                _log.LogDebug("No companies found in Tally response");
-                return;
-            }
-
-            var payload = JsonSerializer.Serialize(new { companies });
+                companies,
+                active_company = activeCompany,
+                tally_reachable = true,
+                connector_version = "1.0.0",
+            });
             var jsonContent = new StringContent(payload, Encoding.UTF8, "application/json");
             var invosync = _httpFactory.CreateClient("InvoSync");
             var syncResp = await invosync.PostAsync("/api/v3/sync/companies", jsonContent, ct);
@@ -115,10 +117,13 @@ public class TallyCompanySyncer
                 _log.LogInformation("Synced {Count} Tally companies to InvoSync", companies.Count);
             else
                 _log.LogWarning("Company sync rejected: {Status}", syncResp.StatusCode);
+
+            return companies;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log.LogDebug("Tally offline: {Message}", ex.Message);
+            return new List<string>();
         }
     }
 

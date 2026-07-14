@@ -6,6 +6,7 @@ namespace InvoSync.TallyConnector.Services;
 public class TallyImportJob
 {
     public int DisplayId { get; set; }
+    public string InvoiceNumber { get; set; } = "";
     public string XmlContent { get; set; } = "";
     public int RetryCount { get; set; }
     public int MaxRetries { get; set; } = 3;

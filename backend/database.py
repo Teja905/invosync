@@ -13,6 +13,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import AutoReconnect, ConnectionFailure
 from bson.objectid import ObjectId
 
+from crypto_utils import encrypt, decrypt
+
 
 def calculate_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
@@ -44,10 +46,11 @@ users = None
 clients = None
 banking_rules = None
 organizations = None
+companies = None
 
 
 async def connect():
-    global _client, _db, invoices, counters, users, clients, banking_rules, organizations
+    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies
     uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     _client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=5000)
     _db = _client.invoice_tally
@@ -57,9 +60,10 @@ async def connect():
     clients = _db.clients
     banking_rules = _db.banking_rules
     organizations = _db.organizations
+    companies = _db.companies
 
     # Seed counters
-    for cname in ("invoice_id", "client_id"):
+    for cname in ("invoice_id", "client_id", "company_id"):
         if not await counters.find_one({"_id": cname}):
             await execute_db_write_with_retry(counters.insert_one, {"_id": cname, "seq": 0})
 
@@ -204,6 +208,82 @@ async def delete_client(client_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Companies (multi-company config store)
+# ---------------------------------------------------------------------------
+
+async def create_company(user_id: str, name: str, gstin: str = "", state_code: str = "",
+                         purchase_ledger: str = "Purchase", sales_ledger: str = "Sales",
+                         bank_ledger: str = "Bank") -> dict:
+    doc = {
+        "company_id": await next_id("company_id"),
+        "user_id": user_id,
+        "company_name": name,
+        "company_gstin": gstin.upper() if gstin else "",
+        "state_code": state_code,
+        "purchase_ledger": purchase_ledger,
+        "sales_ledger": sales_ledger,
+        "bank_ledger": bank_ledger,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "active": True,
+    }
+    await execute_db_write_with_retry(companies.insert_one, doc)
+    return doc
+
+
+async def list_companies(user_id: str) -> list:
+    if companies is None:
+        return []
+    cursor = companies.find({"user_id": user_id, "active": True}).sort("company_name", 1)
+    return await cursor.to_list(length=50)
+
+
+async def get_company(company_id: int) -> Optional[dict]:
+    if companies is None:
+        return None
+    return await companies.find_one({"company_id": company_id})
+
+
+async def update_company(company_id: int, updates: dict):
+    if companies is None:
+        return
+    allowed = {"company_name", "company_gstin", "state_code", "purchase_ledger",
+               "sales_ledger", "bank_ledger", "active"}
+    clean = {k: v for k, v in updates.items() if k in allowed and v}
+    if clean:
+        await execute_db_write_with_retry(
+            companies.update_one, {"company_id": company_id}, {"$set": clean}
+        )
+
+
+async def delete_company(company_id: int):
+    if companies is None:
+        return
+    await execute_db_write_with_retry(companies.delete_one, {"company_id": company_id})
+
+
+async def auto_migrate_env_config(user_id: str) -> Optional[int]:
+    """Migrate env-var company config into companies collection if no companies exist."""
+    if companies is None:
+        return None
+    existing = await companies.count_documents({"user_id": user_id})
+    if existing > 0:
+        return None
+    env_name = os.getenv("COMPANY_NAME", "")
+    if not env_name:
+        return None
+    doc = await create_company(
+        user_id=user_id,
+        name=env_name,
+        gstin=os.getenv("COMPANY_GSTIN", ""),
+        state_code=os.getenv("COMPANY_STATE_CODE", ""),
+        purchase_ledger=os.getenv("PURCHASE_LEDGER", "Purchase"),
+        sales_ledger=os.getenv("SALES_LEDGER", "Sales"),
+        bank_ledger=os.getenv("BANK_LEDGER", "Bank"),
+    )
+    return doc["company_id"]
+
+
+# ---------------------------------------------------------------------------
 # Banking Rules
 # ---------------------------------------------------------------------------
 
@@ -242,11 +322,12 @@ async def delete_banking_rule(rule_id: str, user_id: str):
 async def insert_invoice(
     user_id: str, client_id: int, extracted: dict, validation: dict,
     xml_generated: bool = False, xml_content: str = None, xml_issues: list = None,
-    file_hash: str = "", image_data: str = "",
+    file_hash: str = "", image_data: str = "", company_id: int = None,
 ) -> tuple[int, object]:
     doc = {
         "display_id": await next_id("invoice_id"),
         "user_id": user_id,
+        "company_id": company_id,
         "client_id": client_id,
         # FIX: file_hash stored at TOP LEVEL — not inside extracted — so the index works
         "file_hash": file_hash,
@@ -385,3 +466,57 @@ async def find_similar_vendors(vendor_name: str, user_id: str = None) -> list[di
             similar.append((ratio, {"vendor_name": name, "gstin": gstin, "last_seen": r.get("created_at", "")}))
     similar.sort(key=lambda x: -x[0])
     return [s[1] for s in similar[:5]]
+
+
+# ---------------------------------------------------------------------------
+# Company Analytics
+# ---------------------------------------------------------------------------
+
+async def get_company_analytics(company_id: int) -> dict:
+    """Aggregate invoice stats for a company: counts by status, monthly trend, top clients."""
+    if invoices is None:
+        return {"total": 0, "by_status": {}, "monthly_trend": [], "top_clients": []}
+
+    match = {"company_id": company_id}
+
+    # 1. count by status
+    pipeline_status = [{"$match": match}, {"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+    status_raw = await invoices.aggregate(pipeline_status).to_list(length=20)
+    by_status = {s["_id"] or "unknown": s["count"] for s in status_raw}
+
+    # 2. monthly trend — last 12 months
+    from bson.son import SON
+    pipeline_monthly = [
+        {"$match": {**match, "created_at": {"$ne": None}}},
+        {"$project": {
+            "month": {"$substr": ["$created_at", 0, 7]}
+        }},
+        {"$group": {"_id": "$month", "count": {"$sum": 1}}},
+        {"$sort": SON([("_id", 1)])},
+    ]
+    monthly_raw = await invoices.aggregate(pipeline_monthly).to_list(length=24)
+    monthly_trend = [{"month": m["_id"], "count": m["count"]} for m in monthly_raw]
+
+    # 3. top clients
+    pipeline_clients = [
+        {"$match": match},
+        {"$group": {"_id": "$client_id", "count": {"$sum": 1}}},
+        {"$sort": SON([("count", -1)])},
+        {"$limit": 5},
+    ]
+    client_raw = await invoices.aggregate(pipeline_clients).to_list(length=5)
+    top_clients_raw = []
+    for c in client_raw:
+        if clients is not None:
+            cl = await clients.find_one({"client_id": c["_id"]}, {"client_name": 1, "company_name": 1})
+            name = (cl or {}).get("client_name") or (cl or {}).get("company_name") or f"Client #{c['_id']}"
+        else:
+            name = f"Client #{c['_id']}"
+        top_clients_raw.append({"client_id": c["_id"], "name": name, "count": c["count"]})
+
+    return {
+        "total": sum(by_status.values()),
+        "by_status": by_status,
+        "monthly_trend": monthly_trend,
+        "top_clients": top_clients_raw,
+    }

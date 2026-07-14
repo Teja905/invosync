@@ -9,7 +9,8 @@ public partial class TallyPusher
 {
     private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<TallyPusher> _log;
-
+    private readonly SemaphoreSlim _pushGate = new(1, 1);
+    private Task? _activePush;
     private static readonly Regex _xmlDecl = XmlDeclRegex();
 
     [GeneratedRegex(@"^<\?xml\s+.*?\?>", RegexOptions.Compiled)]
@@ -21,13 +22,39 @@ public partial class TallyPusher
         _log = log;
     }
 
+    /// <summary>Waits for the current push (if any) to complete, up to the given timeout.</summary>
+    public async Task WaitForCurrentPushAsync(TimeSpan timeout)
+    {
+        if (_activePush == null || _activePush.IsCompleted) return;
+        try { await _activePush.WaitAsync(timeout).ConfigureAwait(false); }
+        catch (TimeoutException) { _log.LogWarning("Timed out waiting for in-flight push"); }
+    }
+
     /// <summary>
     /// Pushes XML to Tally with retry (exponential backoff: 5s, 15s, 45s).
-    /// Returns the result of the last attempt.
+    /// If tallyPassword is provided, injects &lt;PASSWORD&gt; into the &lt;HEADER&gt;.
+    /// Returns the result of the last attempt. Ensures only one push at a time.
     /// </summary>
-    public async Task<TallyImportResult> PushAsync(string xml, CancellationToken ct, int maxRetries = 3)
+    public async Task<TallyImportResult> PushAsync(string xml, CancellationToken ct, int maxRetries = 3, string? tallyPassword = null)
+    {
+        await _pushGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var pushTask = InternalPushAsync(xml, ct, maxRetries, tallyPassword);
+            _activePush = pushTask;
+            return await pushTask.ConfigureAwait(false);
+        }
+        finally
+        {
+            _pushGate.Release();
+        }
+    }
+
+    private async Task<TallyImportResult> InternalPushAsync(string xml, CancellationToken ct, int maxRetries, string? tallyPassword)
     {
         var cleanXml = _xmlDecl.Replace(xml, "").Trim();
+        if (!string.IsNullOrEmpty(tallyPassword))
+            cleanXml = InjectPassword(cleanXml, tallyPassword);
         var http = _httpFactory.CreateClient("Tally");
 
         for (int attempt = 1; attempt <= maxRetries; attempt++)
@@ -35,8 +62,8 @@ public partial class TallyPusher
             var content = new StringContent(cleanXml, Encoding.UTF8, "text/xml");
             try
             {
-                var resp = await http.PostAsync("", content, ct);
-                var body = await resp.Content.ReadAsStringAsync(ct);
+                var resp = await http.PostAsync("", content, ct).ConfigureAwait(false);
+                var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
 
                 if (!resp.IsSuccessStatusCode)
                 {
@@ -67,7 +94,7 @@ public partial class TallyPusher
     private static async Task Backoff(int attempt, CancellationToken ct)
     {
         var delay = TimeSpan.FromSeconds(Math.Pow(3, attempt - 1) * 5); // 5s, 15s, 45s
-        await Task.Delay(delay, ct);
+        await Task.Delay(delay, ct).ConfigureAwait(false);
     }
 
     private static string? ParseErrorLine(string xml)
@@ -81,5 +108,55 @@ public partial class TallyPusher
         {
             return null;
         }
+    }
+
+    /// <summary>Deletes a voucher from Tally by voucher number and type.</summary>
+    public async Task<TallyImportResult> UndoLastPushAsync(
+        string voucherNumber, string voucherType, string date, string? tallyPassword, CancellationToken ct)
+    {
+        var deleteXml = $@"<ENVELOPE>
+<HEADER><VERSION>1</VERSION>{(string.IsNullOrEmpty(tallyPassword) ? "" : $"<PASSWORD>{tallyPassword}</PASSWORD>")}<TALLYREQUEST>Import Data</TALLYREQUEST><TYPE>Data</TYPE></HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC>
+<REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF=""TallyUDF"">
+<VOUCHER VCHTYPE=""{EscapeXml(voucherType)}"" ACTION=""Delete"" OBJVIEW=""Invoice Voucher View"">
+<DATE>{EscapeXml(date)}</DATE>
+<VOUCHERNUMBER>{EscapeXml(voucherNumber)}</VOUCHERNUMBER>
+</VOUCHER>
+</TALLYMESSAGE>
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>";
+        return await PushAsync(deleteXml, ct, maxRetries: 2, tallyPassword: tallyPassword);
+    }
+
+    private static string EscapeXml(string s) =>
+        s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;").Replace("'", "&apos;");
+
+    /// <summary>
+    /// Injects &lt;PASSWORD&gt;xxx&lt;/PASSWORD&gt; into the &lt;HEADER&gt; of a Tally XML envelope.
+    /// </summary>
+    private static string InjectPassword(string xml, string password)
+    {
+        // Insert <PASSWORD> after <VERSION>...</VERSION> inside <HEADER>
+        var versionEnd = "</VERSION>";
+        var versionIdx = xml.IndexOf(versionEnd, StringComparison.Ordinal);
+        if (versionIdx >= 0)
+        {
+            var insertAt = versionIdx + versionEnd.Length;
+            return xml[..insertAt] + $"<PASSWORD>{password}</PASSWORD>" + xml[insertAt..];
+        }
+        // Fallback: insert after <HEADER>
+        var headerStart = "<HEADER>";
+        var headerIdx = xml.IndexOf(headerStart, StringComparison.Ordinal);
+        if (headerIdx >= 0)
+        {
+            var insertAt = headerIdx + headerStart.Length;
+            return xml[..insertAt] + $"<PASSWORD>{password}</PASSWORD>" + xml[insertAt..];
+        }
+        return xml;
     }
 }

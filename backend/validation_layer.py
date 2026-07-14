@@ -7,6 +7,7 @@ from typing import Optional
 
 from company_config import CompanyConfig
 from ledger_mapping import LedgerMappingEngine
+from rules_engine import RulesEngine
 from schemas import (
     StandardizedInvoice, VoucherType, GSTType, DocumentClass,
     LineItem, TaxEntry, ALLOWED_GST_SLABS,
@@ -15,6 +16,8 @@ from gst_engine import validate_gstin, determine_gst_type, validate_tax_structur
 from voucher_classifier import classify_document_detailed, classify_voucher_type
 
 _config = CompanyConfig()
+_rules_engine = RulesEngine()
+_ledger_engine = LedgerMappingEngine(_config, _rules_engine)
 
 # Checks that block XML generation even with force=true.
 # Missing vendor name / total amount creates broken vouchers.
@@ -151,12 +154,12 @@ def _pre_validate_tax_routing(inv: StandardizedInvoice, result: ValidationResult
                 )
                 break
 
-    # Rule 5: RCM — tax ledgers must use (RCM) naming
+    # Rule 5: RCM — tax ledgers should use (RCM) naming
     if inv.is_rcm:
         rcm_names = [t.name for t in inv.taxes if "(RCM)" not in (t.name or "")]
         if rcm_names:
-            issues.append(
-                f"RCM transaction: tax ledgers must include '(RCM)' suffix. "
+            result.add_warning(
+                f"RCM transaction: tax ledgers should include '(RCM)' suffix for clarity. "
                 f"Affected: {', '.join(rcm_names[:3])}"
             )
 
@@ -189,14 +192,23 @@ def validate_invoice_for_xml(inv: StandardizedInvoice) -> ValidationResult:
 
 def _check_mandatory_fields(inv: StandardizedInvoice, result: ValidationResult):
     missing = []
-    if not inv.vendor_name:
-        missing.append("Vendor name")
+    voucher_type = inv.voucher_type.value if inv.voucher_type else ""
+    
+    # Vendor name optional for Journal vouchers
+    if voucher_type != "Journal":
+        if not inv.vendor_name or not inv.vendor_name.strip():
+            missing.append("Vendor name")
+    
     if not inv.invoice_number:
         missing.append("Invoice number")
     if not inv.invoice_date:
         missing.append("Invoice date")
-    if inv.total_amount <= 0:
-        missing.append("Valid total amount")
+    
+    # Credit/Debit notes can have negative totals
+    if voucher_type not in ("Credit Note", "Debit Note"):
+        if inv.total_amount <= 0:
+            missing.append("Valid total amount")
+    
     if not inv.is_service and not inv.line_items:
         missing.append("Line items")
     if missing:
@@ -207,20 +219,26 @@ def _check_mandatory_fields(inv: StandardizedInvoice, result: ValidationResult):
 
 def _check_voucher_balance(inv: StandardizedInvoice, result: ValidationResult):
     issues = []
+    voucher_type = inv.voucher_type.value if inv.voucher_type else ""
 
-    if inv.total_amount <= 0:
-        issues.append(f"Total amount must be positive: Rs.{inv.total_amount:.2f}")
+    # Credit/Debit notes can have negative totals
+    if voucher_type not in ("Credit Note", "Debit Note"):
+        if inv.total_amount <= 0:
+            issues.append(f"Total amount must be positive: Rs.{inv.total_amount:.2f}")
 
-    if inv.total_taxable_value > inv.total_amount + 1:
-        issues.append(f"Taxable value Rs.{inv.total_taxable_value:.2f} exceeds total Rs.{inv.total_amount:.2f}")
+    if voucher_type not in ("Credit Note", "Debit Note"):
+        if inv.total_taxable_value > inv.total_amount + 1:
+            issues.append(f"Taxable value Rs.{inv.total_taxable_value:.2f} exceeds total Rs.{inv.total_amount:.2f}")
 
     total_tax = sum(t.amount for t in inv.taxes)
     if total_tax > 0 and total_tax > inv.total_taxable_value * 0.5:
         issues.append(f"Tax Rs.{total_tax:.2f} seems high relative to taxable Rs.{inv.total_taxable_value:.2f}")
 
-    for t in inv.taxes:
-        if t.amount < 0:
-            issues.append(f"Negative tax entry: {t.name} Rs.{t.amount:.2f}")
+    # Negative tax entries are allowed for Credit/Debit notes
+    if voucher_type not in ("Credit Note", "Debit Note"):
+        for t in inv.taxes:
+            if t.amount < 0:
+                issues.append(f"Negative tax entry: {t.name} Rs.{t.amount:.2f}")
 
     if inv.tds_amount < 0:
         issues.append(f"TDS amount is negative: Rs.{inv.tds_amount:.2f}")
@@ -417,10 +435,17 @@ def _check_ledger_fallback(inv: StandardizedInvoice, result: ValidationResult):
     for item in inv.line_items:
         if not item.description:
             continue
-        ledger = _config.get_expense_ledger(item.description)
-        if ledger == "Office Expenses":
+        match = _ledger_engine.map_expense_ledger_scored(item.description, amount=item.taxable_value)
+        if not match.ledger_name or match.confidence == 0.0:
             result.add_warning(
-                f"Ledger fallback: '{item.description}' didn't match known patterns → using Office Expenses"
+                f"Unmapped: '{item.description}' — no matching ledger found. "
+                f"Suggestions: {', '.join(match.suggestions[:3])}. "
+                f"Will use Suspense ledger pending your review."
+            )
+        elif match.confidence < 0.80:
+            result.add_warning(
+                f"Low confidence ({match.confidence*100:.0f}%) for '{item.description}' "
+                f"→ '{match.ledger_name}'. Please confirm this is correct."
             )
 
 
@@ -444,13 +469,12 @@ def _check_expense_classification(inv: StandardizedInvoice, result: ValidationRe
 
 
 def _list_referenced_ledgers(inv: StandardizedInvoice, result: ValidationResult):
-    engine = LedgerMappingEngine(_config)
     ledgers: set[str] = set()
     for item in inv.line_items:
         if item.is_service:
-            ledgers.add(engine.map_expense_ledger(item.description))
+            ledgers.add(_ledger_engine.map_expense_ledger(item.description))
         else:
-            ledgers.add(engine.map_purchase_ledger(item.description))
+            ledgers.add(_ledger_engine.map_purchase_ledger(item.description))
     if inv.cess_amount > 0:
         is_input = inv.voucher_type in (VoucherType.PURCHASE, VoucherType.JOURNAL, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE)
         ledgers.add(_config.get_cess_ledger(is_input))
@@ -463,9 +487,9 @@ def _list_referenced_ledgers(inv: StandardizedInvoice, result: ValidationResult)
     if inv.voucher_type in (VoucherType.PAYMENT, VoucherType.RECEIPT):
         ledgers.add(_config.get_bank_ledger())
     if inv.voucher_type in (VoucherType.PURCHASE, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE):
-        ledgers.add(engine.map_purchase_ledger())
+        ledgers.add(_ledger_engine.map_purchase_ledger())
     if inv.voucher_type == VoucherType.SALES:
-        ledgers.add(engine.map_sales_ledger())
+        ledgers.add(_ledger_engine.map_sales_ledger())
     for tax in inv.taxes:
         is_input = inv.voucher_type in (
             VoucherType.PURCHASE, VoucherType.JOURNAL,

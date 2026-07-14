@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using InvoSync.TallyConnector;
+using InvoSync.TallyConnector.Forms;
 using InvoSync.TallyConnector.Services;
 
 // === PRODUCTION SHIELD: never silently crash ===
@@ -26,6 +27,9 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     Environment.Exit(1);
 };
 
+var _log = default(ILogger);
+var _host = default(IHost);
+
 TaskScheduler.UnobservedTaskException += (_, e) =>
 {
     WriteCrash("UNOBSERVED TASK EXCEPTION", e.Exception);
@@ -37,9 +41,28 @@ try
 {
     var builder = Host.CreateApplicationBuilder(args);
     builder.Services.AddSingleton<QueueManager>();
+    builder.Services.AddSingleton<OfflineQueue>();
+    builder.Services.AddSingleton<ConnectionManager>();
+    builder.Services.AddSingleton<CompanyGuard>();
     builder.Services.AddTransient<TallyPusher>();
+    builder.Services.AddTransient<SmartPusher>();
+    builder.Services.AddSingleton<NetworkMonitor>();
+    builder.Services.AddSingleton<AutoUpdater>();
+    builder.Services.AddSingleton<ConnectorLogger>();
+    builder.Services.AddSingleton<DiagnosticReporter>();
     builder.Services.AddSingleton<TallyCompanySyncer>();
     builder.Services.AddSingleton<TallyLedgerSyncer>();
+    builder.Services.AddSingleton<TallyRegisterPuller>();
+    builder.Services.AddSingleton<TallyMasterReader>();
+    builder.Services.AddSingleton<DryRunValidator>();
+    builder.Services.AddSingleton<ImportReporter>();
+    builder.Services.AddSingleton<IdempotencyChecker>();
+    builder.Services.AddSingleton<SessionManager>();
+    builder.Services.AddSingleton<AutoRecoveryService>();
+    builder.Services.AddSingleton<SyncWatchdog>();
+    builder.Services.AddSingleton<RecentPushStore>();
+    builder.Services.AddSingleton<UnlimitedBatchPusher>();
+    builder.Services.AddTransient<SetupWizard>();
     builder.Services.AddHttpClient("InvoSync", c =>
     {
         var cfg = builder.Configuration.GetSection("InvoSync");
@@ -57,14 +80,40 @@ try
     builder.Services.AddSingleton<MainForm>();
     builder.Services.AddHostedService<PollingService>();
 
-    var host = builder.Build();
+    _host = builder.Build();
 
-    // Start background services
-    var cts = new CancellationTokenSource();
-    _ = host.RunAsync(cts.Token);
+    // Capture logger for shutdown handler
+    _log = _host.Services.GetRequiredService<ILogger<Program>>();
 
-    // Show main window
-    var form = host.Services.GetRequiredService<MainForm>();
+    // Graceful shutdown: allow services to drain
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true;
+        _log?.LogInformation("Shutdown requested — draining pending operations...");
+        cts.Cancel();
+    };
+
+    // First-run: show setup wizard if no session exists
+    var sessionManager = _host.Services.GetRequiredService<SessionManager>();
+    if (!sessionManager.IsLoggedIn)
+    {
+        var wizard = _host.Services.GetRequiredService<SetupWizard>();
+        if (wizard.ShowDialog() != DialogResult.OK)
+        {
+            _log.LogInformation("Setup cancelled by user");
+            return;
+        }
+    }
+
+    // Show main window (minimized if --minimized flag set)
+    bool startMinimized = args.Contains("--minimized");
+    var form = _host.Services.GetRequiredService<MainForm>();
+    if (startMinimized)
+    {
+        form.WindowState = FormWindowState.Minimized;
+        form.Hide();
+    }
     Application.Run(form);
     cts.Cancel();
 }
@@ -75,3 +124,5 @@ catch (Exception ex)
         MessageBoxButtons.OK, MessageBoxIcon.Error);
     throw;
 }
+
+// Program class is generated from top-level statements above.

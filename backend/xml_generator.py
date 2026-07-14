@@ -60,19 +60,24 @@ class TallyXmlGenerator:
         self.config = config or CompanyConfig()
         self.ledger_engine = LedgerMappingEngine(self.config)
         self.include_ledgers = include_ledgers
+        self.masters_created = False
 
-    def generate(self, inv: StandardizedInvoice) -> str:
+    def generate(self, inv: StandardizedInvoice, company_name: str = "",
+                 reuse_masters: Optional[bool] = None) -> str:
         envelopes: list[ET.Element] = []
+        active_company = company_name or self.config.company_name
+        if reuse_masters is None:
+            reuse_masters = self.masters_created
         if self.include_ledgers:
-            master_elems = self._collect_master_elements(inv)
+            master_elems = self._collect_master_elements(inv, reuse_masters=reuse_masters)
             if master_elems:
                 master_tree = self._build_masters_envelope(master_elems)
                 envelopes.append(master_tree.getroot())
-        voucher_env = self._build_voucher_envelope([self._build_voucher_msg(inv)])
+        voucher_env = self._build_voucher_envelope([self._build_voucher_msg(inv)], active_company)
         envelopes.append(voucher_env)
         return self._combine_envelopes(envelopes)
 
-    def _build_voucher_envelope(self, tallymessages: list[ET.Element]) -> ET.Element:
+    def _build_voucher_envelope(self, tallymessages: list[ET.Element], company_name: str = "") -> ET.Element:
         """Standard Tally voucher import envelope.
         Vouchers MUST be imported under REPORTNAME='Vouchers' (not 'All Masters');
         using the wrong report name causes 'partially imported with errors' in Tally Prime."""
@@ -84,7 +89,7 @@ class TallyXmlGenerator:
         reqdesc = ET.SubElement(importdata, "REQUESTDESC")
         ET.SubElement(reqdesc, "REPORTNAME").text = "Vouchers"
         sv = ET.SubElement(reqdesc, "STATICVARIABLES")
-        ET.SubElement(sv, "SVCURRENTCOMPANY").text = self.config.company_name
+        ET.SubElement(sv, "SVCURRENTCOMPANY").text = company_name or self.config.company_name
         reqdata = ET.SubElement(importdata, "REQUESTDATA")
         for msg in tallymessages:
             reqdata.append(msg)
@@ -97,25 +102,39 @@ class TallyXmlGenerator:
             parts.append(ET.tostring(env, encoding="UTF-8").decode("UTF-8"))
         return "\n".join(parts)
 
-    def _collect_master_elements(self, inv: StandardizedInvoice) -> list[ET.Element]:
+    def _collect_master_elements(self, inv: StandardizedInvoice,
+                                 reuse_masters: bool = False) -> list[ET.Element]:
         masters: list[ET.Element] = []
+        seen_stock: set[str] = set()
+
+        if reuse_masters:
+            # Kinetic mode: only create the party ledger + new stock items
+            # Skip voucher type, standard ledgers (already exist in Tally)
+            self._build_ledger_elements(inv, masters, reuse_masters=True)
+            # Stock items: create if auto-requested (Tally handles duplicates for stock)
+            if inv.auto_create_stock_items and not inv.is_service and inv.line_items:
+                masters.append(self._make_stock_group("Primary"))
+                for item in inv.line_items:
+                    name = (item.description or "").strip()
+                    if name and name not in seen_stock:
+                        seen_stock.add(name)
+                        masters.append(self._make_stock_item(item))
+            return masters
 
         # 1. Voucher type
         masters.append(self._make_voucher_type(inv.voucher_type.value))
 
-        # 2. Stock items — opt-in only
-        if inv.auto_create_stock_items and not inv.is_service and inv.line_items:
+        # 2. Stock items — always for goods invoices, opt-in for services
+        if not inv.is_service and inv.line_items:
             masters.append(self._make_stock_group("Primary"))
-            seen = set()
             for item in inv.line_items:
                 name = (item.description or "").strip()
-                if name and name not in seen:
-                    seen.add(name)
+                if name and name not in seen_stock:
+                    seen_stock.add(name)
                     masters.append(self._make_stock_item(item))
 
-        # 3. Ledgers
-        ledgers = self._build_ledger_elements(inv)
-        masters.extend(ledgers)
+        # 3. Ledgers (all types)
+        self._build_ledger_elements(inv, masters, reuse_masters=False)
 
         return masters
 
@@ -261,7 +280,10 @@ class TallyXmlGenerator:
             })
 
         # GST tax ledgers
-        is_input = vt in (VoucherType.PURCHASE, VoucherType.JOURNAL, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE)
+        if vt == VoucherType.JOURNAL:
+            is_input = False
+        else:
+            is_input = vt in (VoucherType.PURCHASE, VoucherType.JOURNAL, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE)
         taxes = self._compute_taxes_if_needed(inv)
         for tax in taxes:
             ln = self.ledger_engine.map_gst_ledger(tax.type, tax.rate, is_input)
@@ -355,7 +377,7 @@ class TallyXmlGenerator:
             reqdata.append(el)
         return ET.ElementTree(envelope)
 
-    def _build_single_envelope(self, tallymessages: list[ET.Element]) -> str:
+    def _build_single_envelope(self, tallymessages: list[ET.Element], company_name: str = "") -> str:
         envelope = ET.Element("ENVELOPE")
         header = ET.SubElement(envelope, "HEADER")
         ET.SubElement(header, "TALLYREQUEST").text = "Import Data"
@@ -364,7 +386,7 @@ class TallyXmlGenerator:
         body = ET.SubElement(envelope, "BODY")
         desc = ET.SubElement(body, "DESC")
         sv = ET.SubElement(desc, "STATICVARIABLES")
-        ET.SubElement(sv, "SVCURRENTCOMPANY").text = self.config.company_name
+        ET.SubElement(sv, "SVCURRENTCOMPANY").text = company_name or self.config.company_name
         data = ET.SubElement(body, "DATA")
         for msg in tallymessages:
             data.append(msg)
@@ -383,8 +405,8 @@ class TallyXmlGenerator:
                 el.text = _sanitize(str(val))
         return tm
 
-    def _build_ledger_elements(self, inv: StandardizedInvoice) -> list[ET.Element]:
-        ledgers: list[ET.Element] = []
+    def _build_ledger_elements(self, inv: StandardizedInvoice,
+                               ledgers: list[ET.Element], reuse_masters: bool = False) -> None:
         seen: set[str] = set()
 
         def add_once(name: str, parent: str, **kw):
@@ -394,7 +416,7 @@ class TallyXmlGenerator:
 
         vt = inv.voucher_type
 
-        # -- Party ledger (vendor or buyer) --
+        # -- Party ledger (vendor or buyer) — ALWAYS created (new party = new ledger) --
         if vt == VoucherType.SALES:
             party_name = inv.buyer_name or inv.vendor_name
             party_parent = self.config.get_sundry_debtors_group()
@@ -413,16 +435,25 @@ class TallyXmlGenerator:
                 party_kw["STATENAME"] = sn
         add_once(party_name, party_parent, **party_kw)
 
+        if reuse_masters:
+            return  # Only party ledger needed when masters already exist
+
         # -- Main transaction ledger --
-        if vt in (VoucherType.PURCHASE, VoucherType.JOURNAL, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE):
+        if vt in (VoucherType.PURCHASE, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE):
             add_once(self.ledger_engine.map_purchase_ledger(), self.config.get_purchase_accounts_group())
         elif vt == VoucherType.SALES:
             add_once(self.ledger_engine.map_sales_ledger(), self.config.get_sales_accounts_group())
+        elif vt == VoucherType.JOURNAL:
+            desc = inv.line_items[0].description if inv.line_items else inv.invoice_number
+            add_once(self.ledger_engine.map_expense_ledger(desc), self.config.get_purchase_accounts_group())
         if vt in (VoucherType.PAYMENT, VoucherType.RECEIPT):
             add_once(self.config.get_bank_ledger(), self.config.get_bank_accounts_group())
 
         # -- GST tax ledgers --
-        is_input = vt in (VoucherType.PURCHASE, VoucherType.JOURNAL, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE)
+        if vt == VoucherType.JOURNAL:
+            is_input = False
+        else:
+            is_input = vt in (VoucherType.PURCHASE, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE)
         taxes = self._compute_taxes_if_needed(inv)
         for tax in taxes:
             ln = self.ledger_engine.map_gst_ledger(tax.type, tax.rate, is_input)
@@ -443,15 +474,16 @@ class TallyXmlGenerator:
         if inv.round_off != 0:
             add_once(self.config.get_round_off_ledger(), self.config.get_purchase_accounts_group())
 
-        # -- Auto-create ANY ledger referenced in line items not yet created --
-        for item in inv.line_items:
-            ln = item.ledger_name.strip() if item.ledger_name.strip() else ""
-            if not ln:
-                ln = self.ledger_engine.map_expense_ledger(item.description)
-            if ln and ln not in seen:
-                add_once(ln, "Primary")
-
-        return ledgers
+        # -- Auto-create ledgers for service line items that will be individually debited --
+        if inv.is_service and inv.line_items:
+            for item in inv.line_items:
+                if not item.is_service:
+                    continue
+                ln = item.ledger_name.strip() if item.ledger_name.strip() else ""
+                if not ln:
+                    ln = self.ledger_engine.map_expense_ledger(item.description)
+                if ln and ln not in seen:
+                    add_once(ln, "Primary")
 
     @staticmethod
     def _gst_type_name(tax_type: str) -> str:
@@ -494,7 +526,7 @@ class TallyXmlGenerator:
         msgs = [self._build_voucher_msg(inv)]
         return self._build_single_envelope(msgs)
 
-    def _build_envelope(self, body_xml: ET.Element) -> ET.ElementTree:
+    def _build_envelope(self, body_xml: ET.Element, company_name: str = "") -> ET.ElementTree:
         envelope = ET.Element("ENVELOPE")
         header = ET.SubElement(envelope, "HEADER")
         ET.SubElement(header, "TALLYREQUEST").text = "Import Data"
@@ -503,7 +535,7 @@ class TallyXmlGenerator:
         body = ET.SubElement(envelope, "BODY")
         desc = ET.SubElement(body, "DESC")
         sv = ET.SubElement(desc, "STATICVARIABLES")
-        ET.SubElement(sv, "SVCURRENTCOMPANY").text = self.config.company_name
+        ET.SubElement(sv, "SVCURRENTCOMPANY").text = company_name or self.config.company_name
         data = ET.SubElement(body, "DATA")
         data.append(body_xml)
         return ET.ElementTree(envelope)
@@ -515,11 +547,12 @@ class TallyXmlGenerator:
         voucher.set("ACTION", "Create")
         ET.SubElement(voucher, "VOUCHERTYPENAME").text = vchtype
         ET.SubElement(voucher, "PERSISTEDVIEW").text = "Accounting Voucher View"
-        # We emit accounting (ledger-only) vouchers, not inventory invoices.
-        # ISINVOICE=Yes makes Tally expect ALLINVENTORYENTRIES.LIST; since we only
-        # produce ALLLEDGERENTRIES.LIST, keeping ISINVOICE=No avoids invoice-mode
-        # rejections while still recording the correct accounting entries.
-        ET.SubElement(voucher, "ISINVOICE").text = "No"
+        # ISINVOICE=Yes only for Purchase/Sales goods invoices; No for services and non-inventory voucher types
+        has_inventory = False
+        if inv and not inv.is_service and inv.line_items:
+            if inv.voucher_type in (VoucherType.PURCHASE, VoucherType.SALES):
+                has_inventory = True
+        ET.SubElement(voucher, "ISINVOICE").text = "Yes" if has_inventory else "No"
         return tm, voucher
 
     def _add_basic_fields(self, voucher: ET.Element, inv: StandardizedInvoice):
@@ -622,6 +655,30 @@ class TallyXmlGenerator:
         else:
             self._add_credit_entry(voucher, ledger, inv.cess_amount)
 
+    def _add_inventory_entries(self, voucher: ET.Element, inv: StandardizedInvoice):
+        if inv.is_service or not inv.line_items:
+            return
+        if inv.voucher_type not in (VoucherType.PURCHASE, VoucherType.SALES, VoucherType.CREDIT_NOTE, VoucherType.DEBIT_NOTE):
+            return
+        for item in inv.line_items:
+            inv_entry = ET.SubElement(voucher, "ALLINVENTORYENTRIES.LIST")
+            ET.SubElement(inv_entry, "STOCKITEMNAME").text = _ensure_ledger(item.description)
+            if item.hsn_sac:
+                ET.SubElement(inv_entry, "HSNCODE").text = item.hsn_sac
+            batch = ET.SubElement(inv_entry, "BATCHALLOCATIONS.LIST")
+            if item.tax_rate:
+                ET.SubElement(batch, "GSTRATE").text = f"{item.tax_rate:.2f}"
+            ET.SubElement(batch, "GSTCLASS").text = "HSN"
+            ET.SubElement(batch, "BATCHNAME").text = "Primary"
+            ET.SubElement(batch, "BATCHEXPIRY").text = ""
+            ET.SubElement(batch, "INDENTNO").text = ""
+            ET.SubElement(batch, "ORDERNO").text = ""
+            ET.SubElement(batch, "ORDERDATE").text = ""
+            ET.SubElement(inv_entry, "AMOUNT").text = f"{item.taxable_value:.2f}"
+            ET.SubElement(inv_entry, "ACTUALQTY").text = self._fmt_qty(item.quantity)
+            ET.SubElement(inv_entry, "BILLEDQTY").text = self._fmt_qty(item.quantity)
+            ET.SubElement(inv_entry, "RATE").text = f"{item.rate:.2f}"
+
     def _fmt_qty(self, qty: float) -> str:
         if qty == int(qty):
             return f"{int(qty)}"
@@ -687,6 +744,7 @@ class TallyXmlGenerator:
 
     def _fill_purchase_voucher_body(self, voucher: ET.Element, inv: StandardizedInvoice):
         self._add_basic_fields(voucher, inv)
+        self._add_inventory_entries(voucher, inv)
         party_name = self.ledger_engine.map_party_ledger(inv.vendor_name)
         ET.SubElement(voucher, "PARTYLEDGERNAME").text = party_name
         if inv.vendor_gstin:
@@ -726,6 +784,7 @@ class TallyXmlGenerator:
         + freight Cr + round-off adjustment. Sum of signed AMOUNTs must equal 0.
         """
         self._add_basic_fields(voucher, inv)
+        self._add_inventory_entries(voucher, inv)
         party_name = self.ledger_engine.map_party_ledger(inv.buyer_name or inv.vendor_name)
         ET.SubElement(voucher, "PARTYLEDGERNAME").text = party_name
         if inv.buyer_gstin:
@@ -770,15 +829,34 @@ class TallyXmlGenerator:
         return self._to_string(tree)
 
     def _fill_journal_voucher_body(self, voucher: ET.Element, inv: StandardizedInvoice):
-        """Journal voucher: always uses purchase-side double entry.
-        Dr: Expense/Purchase + GST input ledgers
-        Cr: Party (vendor/supplier)
-        This is correct for adjustment entries and accruals.
+        """Journal voucher: output-side double entry (Dr party, Cr income + output tax).
+        No PARTYLEDGERNAME in header — Tally rejects Journal vouchers with header party allocation.
         """
         self._add_basic_fields(voucher, inv)
-        # Journal always uses purchase-side accounting (Dr expense, Cr party)
-        # This is the correct accounting treatment for journal adjustments
-        self._fill_purchase_voucher_body(voucher, inv)
+        taxes = self._compute_taxes_if_needed(inv)
+
+        desc = inv.line_items[0].description if inv.line_items else inv.invoice_number
+        income_ledger = self.ledger_engine.map_expense_ledger(desc)
+
+        self._add_credit_entry(voucher, income_ledger, inv.total_taxable_value)
+        for tax in taxes:
+            ledger = self.ledger_engine.map_gst_ledger(tax.type, tax.rate, is_input=False, is_rcm=inv.is_rcm)
+            self._add_credit_entry(voucher, ledger, tax.amount)
+
+        credited_total = inv.total_taxable_value + sum(t.amount for t in taxes)
+        if inv.round_off != 0:
+            if inv.round_off > 0:
+                self._add_credit_entry(voucher, self.config.get_round_off_ledger(), abs(inv.round_off))
+                credited_total += abs(inv.round_off)
+            else:
+                self._add_debit_entry(voucher, self.config.get_round_off_ledger(), abs(inv.round_off))
+                credited_total -= abs(inv.round_off)
+
+        party_name = self.ledger_engine.map_party_ledger(inv.vendor_name or inv.buyer_name or "Party")
+        self._add_party_ledger(
+            voucher, party_name, credited_total, inv.invoice_number,
+            is_debit=True, currency=inv.currency, exchange_rate=inv.exchange_rate,
+        )
 
     def _generate_journal_voucher(self, inv: StandardizedInvoice) -> str:
         tm, voucher = self._make_voucher("Journal", inv)
@@ -830,13 +908,14 @@ class TallyXmlGenerator:
         if inv.is_service:
             primary_desc = inv.line_items[0].description if inv.line_items else ""
             purchase_ledger = self.ledger_engine.map_expense_ledger(primary_desc)
-        self._add_credit_entry(voucher, purchase_ledger, inv.total_taxable_value)
+        self._add_credit_entry(voucher, purchase_ledger, abs(inv.total_taxable_value))
         for tax in taxes:
-            self._add_credit_entry(voucher, self.ledger_engine.map_gst_ledger(tax.type, tax.rate, is_input=True), tax.amount)
+            self._add_credit_entry(voucher, self.ledger_engine.map_gst_ledger(tax.type, tax.rate, is_input=True), abs(tax.amount))
         if inv.cess_amount > 0:
-            self._add_credit_entry(voucher, self.config.get_cess_ledger(), inv.cess_amount)
-        total_credits = inv.total_taxable_value + sum(t.amount for t in taxes) + inv.cess_amount
+            self._add_credit_entry(voucher, self.config.get_cess_ledger(), abs(inv.cess_amount))
+        total_credits = abs(inv.total_taxable_value) + sum(abs(t.amount) for t in taxes) + abs(inv.cess_amount)
         self._add_party_ledger(voucher, party_name, total_credits, inv.invoice_number, is_debit=True, currency=inv.currency, exchange_rate=inv.exchange_rate)
+        self._add_inventory_entries(voucher, inv)
 
     def _generate_credit_note(self, inv: StandardizedInvoice) -> str:
         tm, voucher = self._make_voucher("Credit Note", inv)
@@ -854,13 +933,14 @@ class TallyXmlGenerator:
         if inv.is_service:
             primary_desc = inv.line_items[0].description if inv.line_items else ""
             purchase_ledger = self.ledger_engine.map_expense_ledger(primary_desc)
-        self._add_debit_entry(voucher, purchase_ledger, inv.total_taxable_value)
+        self._add_debit_entry(voucher, purchase_ledger, abs(inv.total_taxable_value))
         for tax in taxes:
-            self._add_debit_entry(voucher, self.ledger_engine.map_gst_ledger(tax.type, tax.rate, is_input=True), tax.amount)
+            self._add_debit_entry(voucher, self.ledger_engine.map_gst_ledger(tax.type, tax.rate, is_input=True), abs(tax.amount))
         if inv.cess_amount > 0:
-            self._add_debit_entry(voucher, self.config.get_cess_ledger(), inv.cess_amount)
-        total_debits = inv.total_taxable_value + sum(t.amount for t in taxes) + inv.cess_amount
+            self._add_debit_entry(voucher, self.config.get_cess_ledger(), abs(inv.cess_amount))
+        total_debits = abs(inv.total_taxable_value) + sum(abs(t.amount) for t in taxes) + abs(inv.cess_amount)
         self._add_party_ledger(voucher, party_name, total_debits, inv.invoice_number, currency=inv.currency, exchange_rate=inv.exchange_rate)
+        self._add_inventory_entries(voucher, inv)
 
     def _generate_debit_note(self, inv: StandardizedInvoice) -> str:
         tm, voucher = self._make_voucher("Debit Note", inv)
@@ -880,7 +960,7 @@ def resolve_voucher_expense_ledger(invoice_doc: dict) -> str:
     return _sanitize(invoice_doc.get("expense_ledger_default", "Purchase Accounts"))
 
 
-def generate_tally_bank_xml(processed_txs: list[dict], bank_ledger_name: str = "Bank") -> str:
+def generate_tally_bank_xml(processed_txs: list[dict], bank_ledger_name: str = "Bank", company_name: str = "") -> str:
     xml_entries = []
     for tx in processed_txs:
         # FIX: sanitize tally_date before XML injection
@@ -922,11 +1002,12 @@ def generate_tally_bank_xml(processed_txs: list[dict], bank_ledger_name: str = "
 </TALLYMESSAGE>""")
 
     inner = "\n".join(xml_entries)
+    svc = f"<SVCURRENTCOMPANY>{safe_xml_string(company_name)}</SVCURRENTCOMPANY>" if company_name else ""
     return f"""<ENVELOPE>
 <HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER>
 <BODY>
 <IMPORTDATA>
-<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC>
+<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME>{svc}</REQUESTDESC>
 <REQUESTDATA>
 {inner}
 </REQUESTDATA>

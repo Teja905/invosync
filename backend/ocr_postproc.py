@@ -28,6 +28,13 @@ def fix_gstin(raw: str) -> str:
         return ""
     cleaned = raw.strip().upper()
     cleaned = re.sub(r"[^0-9A-Z]", "", cleaned)
+    # Preserve GSTIN structural chars from OCR translation: literal 'Z' at pos 13
+    # and checksum at pos 14 must not be altered.
+    if len(cleaned) >= 14:
+        core = cleaned[:13].translate(GSTIN_FIX_CHARS)
+        return core + cleaned[13:]
+    if len(cleaned) > 0:
+        return cleaned.translate(GSTIN_FIX_CHARS)
     return cleaned
 
 
@@ -63,6 +70,15 @@ def fix_tax_rate(rate: Optional[float]) -> Optional[float]:
     return rate
 
 
+MONTH_MAP = {
+    "jan": "01", "feb": "02", "mar": "03", "apr": "04",
+    "may": "05", "jun": "06", "jul": "07", "aug": "08",
+    "sep": "09", "oct": "10", "nov": "11", "dec": "12",
+}
+
+def _month_to_num(abbr: str) -> str | None:
+    return MONTH_MAP.get(abbr.strip().lower()[:3])
+
 def fix_date(raw: str) -> str:
     if not raw:
         return ""
@@ -81,6 +97,21 @@ def fix_date(raw: str) -> str:
     m = re.match(r"^(\d{8})$", raw)
     if m:
         return f"{m.group(1)[:4]}-{m.group(1)[4:6]}-{m.group(1)[6:8]}"
+    # DD-Mon-YY or DD-Mon-YYYY
+    m = re.match(r"^(\d{1,2})\s*[-/]\s*([A-Za-z]{3,})\s*[-/]\s*(\d{2,4})$", raw)
+    if m:
+        dd, mon, yy = m.group(1), m.group(2), m.group(3)
+        mm = _month_to_num(mon)
+        if mm:
+            prefix = "20" if len(yy) == 2 and int(yy) < 50 else ("19" if len(yy) == 2 else "")
+            return f"{prefix}{yy}-{mm}-{int(dd):02d}"
+    # Mon DD, YYYY or Mon DD YYYY
+    m = re.match(r"^([A-Za-z]{3,})\s+(\d{1,2})\s*,?\s*(\d{4})$", raw)
+    if m:
+        mon, dd, yy = m.group(1), m.group(2), m.group(3)
+        mm = _month_to_num(mon)
+        if mm:
+            return f"{yy}-{mm}-{int(dd):02d}"
     return raw
 
 

@@ -1,4 +1,6 @@
 using System.Net.Http.Json;
+using System.Text;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using InvoSync.TallyConnector.Models;
 
@@ -11,31 +13,121 @@ public class PollingService : BackgroundService
     private readonly IHttpClientFactory _httpFactory;
     private readonly TallyPusher _pusher;
     private readonly QueueManager _queue;
+    private readonly OfflineQueue _offlineQueue;
+    private readonly NetworkMonitor _networkMonitor;
+    private readonly ConnectorLogger _connectorLogger;
+    private readonly SyncWatchdog _watchdog;
+    private readonly RecentPushStore _recentPushes;
     private readonly TallyCompanySyncer _companySyncer;
     private readonly TallyLedgerSyncer _ledgerSyncer;
+    private readonly TallyRegisterPuller _registerPuller;
+    private readonly TallyMasterReader _masterReader;
+    private readonly DryRunValidator _dryRunValidator;
+    private readonly ImportReporter _importReporter;
+    private readonly IdempotencyChecker _idempotencyChecker;
     private readonly ILogger<PollingService> _log;
     private readonly int _intervalSec;
     private int _tick;
+    private string _tallyPassword = "";
+    private string _activeCompany = "";
+    private CancellationTokenSource? _watchdogCts;
 
     public PollingService(IHttpClientFactory httpFactory, TallyPusher pusher, QueueManager queue,
+        OfflineQueue offlineQueue, NetworkMonitor networkMonitor,
+        ConnectorLogger connectorLogger,
+        SyncWatchdog watchdog, RecentPushStore recentPushes,
         TallyCompanySyncer companySyncer, TallyLedgerSyncer ledgerSyncer,
+        TallyRegisterPuller registerPuller,
+        TallyMasterReader masterReader, DryRunValidator dryRunValidator,
+        ImportReporter importReporter, IdempotencyChecker idempotencyChecker,
         IConfiguration config, ILogger<PollingService> log)
     {
         _httpFactory = httpFactory;
         _pusher = pusher;
         _queue = queue;
+        _offlineQueue = offlineQueue;
+        _networkMonitor = networkMonitor;
+        _connectorLogger = connectorLogger;
+        _watchdog = watchdog;
+        _recentPushes = recentPushes;
         _companySyncer = companySyncer;
         _ledgerSyncer = ledgerSyncer;
+        _registerPuller = registerPuller;
+        _masterReader = masterReader;
+        _dryRunValidator = dryRunValidator;
+        _importReporter = importReporter;
+        _idempotencyChecker = idempotencyChecker;
         _log = log;
         _intervalSec = config.GetValue<int>("InvoSync:PollIntervalSeconds", 30);
+    }
+
+    /// <summary>Fetches Tally password and active company from backend.</summary>
+    private async Task RefreshTallyConfigAsync(CancellationToken ct)
+    {
+        try
+        {
+            var invosync = _httpFactory.CreateClient("InvoSync");
+            var resp = await invosync.GetAsync("/api/v3/tally/config", ct);
+            if (resp.IsSuccessStatusCode)
+            {
+                var cfg = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
+                if (cfg.TryGetProperty("tally_password", out var pw))
+                    _tallyPassword = pw.GetString() ?? "";
+                if (cfg.TryGetProperty("active_company", out var ac))
+                    _activeCompany = ac.GetString() ?? "";
+                _log.LogDebug("Tally config refreshed (password={L}, company={C})",
+                    string.IsNullOrEmpty(_tallyPassword) ? "not set" : "set",
+                    string.IsNullOrEmpty(_activeCompany) ? "not set" : _activeCompany);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogDebug("Tally config refresh failed: {Message}", ex.Message);
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         _log.LogInformation("PollingService started (interval={Interval}s)", _intervalSec);
 
-        // Startup self-test
+        // Wire up watchdog to restart on stuck sync
+        _watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _watchdog.Start(_watchdogCts);
+        _watchdog.SyncRestarted += async (_, _) =>
+        {
+            _log.LogInformation("Watchdog triggered sync restart");
+            _watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            _watchdog.Start(_watchdogCts);
+        };
+
+        // Wire up network monitor to flush offline queue when back online
+        _networkMonitor.NetworkChanged += async (_, available) =>
+        {
+            if (available)
+            {
+                _log.LogInformation("Network restored — flushing offline queue");
+                _offlineQueue.ProcessPending(async item =>
+                {
+                    var result = await _pusher.PushAsync(item.XmlContent, ct, maxRetries: 2, tallyPassword: _tallyPassword);
+                    if (result.Success)
+                    {
+                        _connectorLogger.TallyPush(item.InvoiceId, true);
+                        var client = _httpFactory.CreateClient("InvoSync");
+                        if (int.TryParse(item.InvoiceId, out var id))
+                            await ConfirmSuccessAsync(client, id, ct);
+                    }
+                    else
+                    {
+                        _connectorLogger.TallyPush(item.InvoiceId, false, result.ErrorLine);
+                    }
+                    return result.Success;
+                });
+            }
+        };
+
+        // Startup self-test + fetch Tally config
         await RunStartupSelfTestAsync(ct);
+        await RefreshTallyConfigAsync(ct);
 
         while (!ct.IsCancellationRequested)
         {
@@ -45,12 +137,34 @@ public class PollingService : BackgroundService
                 // Periodic Tally liveness checks
                 if (_tick == 1 || _tick % 20 == 0)
                 {
-                    await _companySyncer.SyncOpenCompaniesAsync(ct);
                     bool reachable = await _companySyncer.RunStartupDiagnosticCheckAsync(ct);
+                    await _companySyncer.SyncOpenCompaniesAsync(ct, activeCompany: "");
                     await _companySyncer.ReportConnectorAliveAsync(reachable, ct);
                 }
                 if (_tick == 2 || _tick % 20 == 0)
                     await _ledgerSyncer.SyncLedgerListAsync(ct);
+
+                // Refetch config periodically (every 60 ticks ~30 min)
+                if (_tick % 60 == 0)
+                    await RefreshTallyConfigAsync(ct);
+
+                // Sync Tally masters every 80 ticks (~40 min)
+                if (_tick % 80 == 0 && !string.IsNullOrEmpty(_activeCompany))
+                {
+                    _log.LogInformation("Syncing Tally masters for company: {Company}", _activeCompany);
+                    await SyncTallyMastersAsync(_activeCompany, ct);
+                }
+
+                // Pull vouchers from Tally (every 40 ticks ~20 min)
+                if (_tick % 40 == 0 && !string.IsNullOrEmpty(_activeCompany))
+                {
+                    _log.LogInformation("Pulling vouchers from Tally company: {Company}", _activeCompany);
+                    var (pulled, posted) = await _registerPuller.PullAndSendAsync(
+                        _activeCompany, _tallyPassword, ct,
+                        fromDate: DateTime.Today.AddDays(-7), toDate: DateTime.Today);
+                    if (pulled > 0)
+                        _log.LogInformation("Tally pull: {Pulled} found, {Posted} imported", pulled, posted);
+                }
 
                 // Fetch pending invoices from backend
                 var client = _httpFactory.CreateClient("InvoSync");
@@ -59,6 +173,7 @@ public class PollingService : BackgroundService
                 if (!resp.IsSuccessStatusCode)
                 {
                     _log.LogWarning("Sync/pending returned {Status}", resp.StatusCode);
+                    await Task.Delay(TimeSpan.FromSeconds(_intervalSec), ct);
                     continue;
                 }
 
@@ -66,6 +181,7 @@ public class PollingService : BackgroundService
                 if (pending?.Invoices == null || pending.Invoices.Count == 0)
                 {
                     _log.LogDebug("No pending invoices");
+                    await Task.Delay(TimeSpan.FromSeconds(_intervalSec), ct);
                     continue;
                 }
 
@@ -84,6 +200,7 @@ public class PollingService : BackgroundService
                     _queue.Enqueue(new TallyImportJob
                     {
                         DisplayId = inv.DisplayId,
+                        InvoiceNumber = inv.InvoiceNumber ?? "",
                         XmlContent = inv.XmlContent,
                         MaxRetries = 3,
                     });
@@ -143,6 +260,65 @@ public class PollingService : BackgroundService
         _log.LogInformation("=== SELF-TEST COMPLETE ===");
     }
 
+    private async Task SyncTallyMastersAsync(string companyName, CancellationToken ct)
+    {
+        try
+        {
+            var ledgers = await _masterReader.GetLedgersAsync(companyName, ct);
+            var stockItems = await _masterReader.GetStockItemsAsync(companyName, ct);
+            var voucherTypes = await _masterReader.GetVoucherTypesAsync(companyName, ct);
+            var groups = await _masterReader.GetGroupsAsync(companyName, ct);
+            var units = await _masterReader.GetUnitsAsync(companyName, ct);
+
+            var client = _httpFactory.CreateClient("InvoSync");
+            using var masterCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            masterCts.CancelAfter(TimeSpan.FromSeconds(30));
+
+            if (ledgers.Count > 0)
+            {
+                var ledgerPayload = new { ledgers };
+                using var ledgerContent = new StringContent(JsonSerializer.Serialize(ledgerPayload), Encoding.UTF8);
+                ledgerContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                await client.PostAsync("/api/v3/tally/masters/ledgers", ledgerContent, masterCts.Token);
+            }
+            if (stockItems.Count > 0)
+            {
+                var stockPayload = new { stock_items = stockItems };
+                using var stockContent = new StringContent(JsonSerializer.Serialize(stockPayload), Encoding.UTF8);
+                stockContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                await client.PostAsync("/api/v3/tally/masters/stock-items", stockContent, masterCts.Token);
+            }
+            if (voucherTypes.Count > 0)
+            {
+                var vtPayload = new { voucher_types = voucherTypes };
+                using var vtContent = new StringContent(JsonSerializer.Serialize(vtPayload), Encoding.UTF8);
+                vtContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                await client.PostAsync("/api/v3/tally/masters/voucher-types", vtContent, masterCts.Token);
+            }
+            if (groups.Count > 0)
+            {
+                var groupPayload = new { groups };
+                using var groupContent = new StringContent(JsonSerializer.Serialize(groupPayload), Encoding.UTF8);
+                groupContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                await client.PostAsync("/api/v3/tally/masters/groups", groupContent, masterCts.Token);
+            }
+            if (units.Count > 0)
+            {
+                var unitPayload = new { units };
+                using var unitContent = new StringContent(JsonSerializer.Serialize(unitPayload), Encoding.UTF8);
+                unitContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                await client.PostAsync("/api/v3/tally/masters/units", unitContent, masterCts.Token);
+            }
+
+            _log.LogInformation("Synced {L} ledgers, {S} stock items, {V} voucher types, {G} groups, {U} units",
+                ledgers.Count, stockItems.Count, voucherTypes.Count, groups.Count, units.Count);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogDebug(ex, "Tally masters sync failed");
+        }
+    }
+
     private async Task ProcessQueueAsync(CancellationToken ct)
     {
         while (_queue.Pending > 0 && !ct.IsCancellationRequested)
@@ -150,24 +326,119 @@ public class PollingService : BackgroundService
             var job = await _queue.DequeueAsync(ct);
             if (job == null) break;
 
+            // If network is down, save to offline queue and skip
+            if (!_networkMonitor.IsAvailable)
+            {
+                _log.LogWarning("Network offline — saving invoice #{Id} to offline queue", job.DisplayId);
+                _offlineQueue.Enqueue(job.DisplayId.ToString(), job.XmlContent);
+                continue;
+            }
+
             var client = _httpFactory.CreateClient("InvoSync");
             _log.LogInformation("Pushing invoice #{Id} to Tally (attempt {N}/{M})",
                 job.DisplayId, job.RetryCount + 1, job.MaxRetries);
 
-            var result = await _pusher.PushAsync(job.XmlContent, ct, maxRetries: 3);
+            _watchdog.RecordActivity();
+
+            // P0 — Idempotency check before push
+            try
+            {
+                var invoiceData = await client.GetFromJsonAsync<InvoicePreview>($"/api/v3/invoices/{job.DisplayId}", ct);
+                if (invoiceData != null && !string.IsNullOrEmpty(invoiceData.VendorName))
+                {
+                    bool isDup = await _idempotencyChecker.IsDuplicateAsync(
+                        invoiceData.VendorName,
+                        invoiceData.InvoiceNumber ?? "",
+                        invoiceData.TotalAmount,
+                        invoiceData.InvoiceDate ?? "",
+                        ct);
+                    if (isDup)
+                    {
+                        _log.LogWarning("Duplicate detected for invoice #{Id} — skipping push", job.DisplayId);
+                        _recentPushes.Add(new RecentPushEntry
+                        {
+                            Timestamp = DateTime.Now,
+                            DisplayId = job.DisplayId,
+                            InvoiceNumber = job.InvoiceNumber,
+                            Success = false,
+                            Error = "Duplicate: already imported",
+                        });
+                        await ConfirmSuccessAsync(client, job.DisplayId, ct);
+                        continue;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex, "Idempotency check skipped for invoice #{Id}", job.DisplayId);
+            }
+
+            // P0 — Dry run validation before push
+            var dryRun = await _dryRunValidator.ValidateAsync(_activeCompany, new { job.DisplayId }, ct);
+            if (!dryRun.SafeToImport)
+            {
+                _log.LogWarning("Dry-run failed for invoice #{Id}: {Warnings}",
+                    job.DisplayId, string.Join("; ", dryRun.Warnings));
+                _recentPushes.Add(new RecentPushEntry
+                {
+                    Timestamp = DateTime.Now,
+                    DisplayId = job.DisplayId,
+                    InvoiceNumber = job.InvoiceNumber,
+                    Success = false,
+                    Error = $"Dry-run failed: {string.Join("; ", dryRun.Warnings)}",
+                });
+                continue;
+            }
+
+            var startTime = DateTime.UtcNow;
+            var result = await _pusher.PushAsync(job.XmlContent, ct, maxRetries: 3, tallyPassword: _tallyPassword);
+            var durationMs = (int)(DateTime.UtcNow - startTime).TotalMilliseconds;
+            _watchdog.RecordActivity();
 
             if (result.Success)
             {
                 _log.LogInformation("Tally accepted invoice #{Id}", job.DisplayId);
+                _connectorLogger.TallyPush(job.DisplayId.ToString(), true);
+                _recentPushes.Add(new RecentPushEntry
+                {
+                    Timestamp = DateTime.Now,
+                    DisplayId = job.DisplayId,
+                    InvoiceNumber = job.InvoiceNumber,
+                    Success = true
+                });
+
+                // P0 — Import report
+                var mastersCreated = dryRun.MastersToCreate ?? new List<string>();
+                string voucherId = ExtractVoucherId(result.RawResponse);
+                _ = _importReporter.ReportAsync(
+                    job.DisplayId, true, mastersCreated, voucherId,
+                    result.RawResponse ?? "", dryRun.Warnings, "", durationMs, ct);
+
                 await ConfirmSuccessAsync(client, job.DisplayId, ct);
             }
             else
             {
                 _log.LogWarning("Tally rejected invoice #{Id}: {Error}", job.DisplayId, result.ErrorLine);
+                _connectorLogger.TallyPush(job.DisplayId.ToString(), false, result.ErrorLine);
+                _recentPushes.Add(new RecentPushEntry
+                {
+                    Timestamp = DateTime.Now,
+                    DisplayId = job.DisplayId,
+                    InvoiceNumber = job.InvoiceNumber,
+                    Success = false,
+                    Error = result.ErrorLine
+                });
+
+                // P0 — Import report for failures
+                _ = _importReporter.ReportAsync(
+                    job.DisplayId, false, new List<string>(), "",
+                    result.RawResponse ?? "", dryRun.Warnings, result.ErrorLine ?? "Unknown", durationMs, ct);
+
                 job.RetryCount++;
                 if (job.RetryCount >= job.MaxRetries)
                 {
-                    _log.LogError("Invoice #{Id} failed after {N} retries — reporting to backend", job.DisplayId, job.MaxRetries);
+                    _log.LogError("Invoice #{Id} failed after {N} retries — saving to offline dead letter", job.DisplayId, job.MaxRetries);
+                    _offlineQueue.Enqueue(job.DisplayId.ToString(), job.XmlContent);
                     await ReportErrorAsync(client, job.DisplayId, result.ErrorLine ?? "Max retries", ct);
                 }
                 else
@@ -177,6 +448,21 @@ public class PollingService : BackgroundService
                 }
             }
         }
+    }
+
+    private static string ExtractVoucherId(string? tallyResponse)
+    {
+        if (string.IsNullOrEmpty(tallyResponse)) return "";
+        var match = System.Text.RegularExpressions.Regex.Match(tallyResponse, @"<VOUCHER[^>]*\bVOUCHERKEY=""([^""]+)""");
+        return match.Success ? match.Groups[1].Value : "";
+    }
+
+    private class InvoicePreview
+    {
+        public string VendorName { get; set; } = "";
+        public string InvoiceNumber { get; set; } = "";
+        public double TotalAmount { get; set; }
+        public string InvoiceDate { get; set; } = "";
     }
 
     private async Task ConfirmSuccessAsync(HttpClient client, int displayId, CancellationToken ct)

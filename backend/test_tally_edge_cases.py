@@ -18,6 +18,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 import pytest
+from ledger_nlp import resolve_contextual_ledger_nlp
 
 from gst_engine import aggregate_and_round_slab_taxes, compute_gst_entries, precise_round, compute_tax_from_items, determine_gst_type, _gst_ledger_name
 from schemas import (
@@ -1005,9 +1006,53 @@ class TestJournalServiceVoucherIntegration:
         assert "<AMOUNT>27140.00</AMOUNT>" in xml_output
 
         # 2. Revenue credit for service provider (deemed-negative with a negative amount)
-        assert "<LEDGERNAME>Audit Fees Received</LEDGERNAME>" in xml_output
+        # ledger_mapping.py maps "audit fees" keywords -> "Audit Expenses"
+        assert "<LEDGERNAME>Audit Expenses</LEDGERNAME>" in xml_output
         assert "<AMOUNT>-23000.00</AMOUNT>" in xml_output
 
         # 3. Output GST credited (negative amount, credit side)
         assert "Output CGST" in xml_output
         assert "<AMOUNT>-2070.00</AMOUNT>" in xml_output
+
+
+# ── Phase 6: NLP Ledger Mapping ──────────────────────────────────────────────
+
+def test_nlp_no_match_returns_suspense():
+    """When no ledger name shares any token or trigram with the description, returns Suspense."""
+    chart = ["Computer & Internet Expenses", "Printing & Stationery", "Office Rent", "Staff Welfare"]
+    r = resolve_contextual_ledger_nlp("ONLINE CLOUD HOSTING SERVICES BY AWS CHARGES", chart)
+    assert r == "Suspense Account", f"Expected Suspense, got {r}"
+
+
+def test_nlp_shared_word_maps_correctly():
+    """'PRINT' token in description partially matches 'Printing' via trigram."""
+    chart = ["Computer & Internet Expenses", "Printing & Stationery", "Office Rent", "Staff Welfare"]
+    r = resolve_contextual_ledger_nlp("XEROX PAPER LEAFLETS PRINT CHARGE BATCH", chart)
+    # 'PRINT' shares trigrams 'PRI', 'RIN', 'INT' with 'PRINTING'
+    assert r == "Printing & Stationery", f"Got {r}"
+
+
+def test_nlp_exact_token_wins():
+    """Exact token overlap outranks trigram-only."""
+    chart = ["Computer Expenses", "Rent", "Printing"]
+    r = resolve_contextual_ledger_nlp("COMPUTER MAINTENANCE", chart)
+    assert r == "Computer Expenses", f"Got {r}"
+
+
+def test_nlp_partial_token_matches_rent():
+    """'OFFICE RENT' has partial token overlap with 'RENTAL CHARGES'."""
+    chart = ["Office Rent", "Maintenance", "Insurance"]
+    r = resolve_contextual_ledger_nlp("RENTAL CHARGES FOR PREMISES", chart)
+    # 'RENTAL' partially matches 'RENT'
+    assert r == "Office Rent", f"Got {r}"
+
+
+def test_nlp_returns_suspense_for_no_match():
+    """Gibberish input falls back to Suspense Account."""
+    r = resolve_contextual_ledger_nlp("XYZZX QWERTY BLAHBLAH", ["Computer Expenses", "Rent"])
+    assert r == "Suspense Account"
+
+
+def test_nlp_handles_empty_ledger_list():
+    """Empty ledger list falls to Suspense."""
+    assert resolve_contextual_ledger_nlp("AWS", []) == "Suspense Account"

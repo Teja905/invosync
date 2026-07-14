@@ -3,6 +3,7 @@
 import os
 import hashlib
 import secrets
+import logging
 from typing import Optional
 import jwt
 from datetime import datetime, timedelta, timezone
@@ -11,10 +12,20 @@ from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
 import database as db
+from audit_log import audit as audit_logger
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-in-production")
+logger = logging.getLogger("invosync.auth")
+
+JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGO = "HS256"
 JWT_EXPIRY_HOURS = 72
+
+if not JWT_SECRET:
+    import secrets
+    JWT_SECRET = secrets.token_urlsafe(64)
+    logger.warning("JWT_SECRET not set — generated ephemeral secret. Set JWT_SECRET env var for production.")
+elif JWT_SECRET in ("dev-secret-change-in-production", "change-this-to-a-long-random-secret-in-production", "secret", "changeme"):
+    logger.warning("JWT_SECRET is using a known default value. Set a strong random secret in production.")
 
 ADMIN_EMAILS = set(
     e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()
@@ -131,8 +142,12 @@ async def signup(req: SignupRequest):
     email = req.email.lower().strip()
     if not email or not req.password or not req.name:
         raise HTTPException(400, "Email, password, and name are required")
-    if len(req.password) < 6:
-        raise HTTPException(400, "Password must be at least 6 characters")
+    if len(req.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if not any(c.isupper() for c in req.password):
+        raise HTTPException(400, "Password must contain at least one uppercase letter")
+    if not any(c.isdigit() for c in req.password):
+        raise HTTPException(400, "Password must contain at least one number")
     if db.users is None:
         raise HTTPException(503, "Database not available")
 
@@ -143,6 +158,7 @@ async def signup(req: SignupRequest):
     pwd_hash = _hash_password(req.password)
     user = await db.create_user(email, pwd_hash, req.name)
     token = create_jwt(email, str(user["_id"]))
+    audit_logger.log_auth("signup", email, True, details=f"name={req.name}")
 
     user_obj = {
         "email": email,
@@ -168,10 +184,12 @@ async def login(req: LoginRequest):
         raise HTTPException(401, "Invalid email or password")
 
     if not _verify_password(req.password, user.get("password_hash", "")):
+        audit_logger.log_auth("login", email, False, details="invalid_password")
         raise HTTPException(401, "Invalid email or password")
 
     await db.update_user_login(email)
     token = create_jwt(email, str(user["_id"]))
+    audit_logger.log_auth("login", email, True, details=f"user_id={user['_id']}")
 
     user_obj = {
         "email": email,

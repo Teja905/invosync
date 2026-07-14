@@ -12,6 +12,8 @@ DEFAULT_LEDGER_MAPPINGS = {
     "professional fees": "Professional Charges",
     "consultation fees": "Professional Charges",
     "consulting fees": "Professional Charges",
+    "consulting": "Professional Charges",
+    "development": "Professional Charges",
     "audit fees": "Audit Expenses",
     "audit": "Audit Expenses",
     "cloud hosting": "Software Expenses",
@@ -168,6 +170,7 @@ class CompanyConfig:
         self.state_code: str = self._user_config.get("company_state_code") or os.getenv(f"{env_prefix}COMPANY_STATE_CODE", "27")
         self.company_name: str = self._user_config.get("company_name") or os.getenv(f"{env_prefix}COMPANY_NAME", "My Company")
         self.company_gstin: str = self._user_config.get("company_gstin") or os.getenv(f"{env_prefix}COMPANY_GSTIN", "")
+        self.masters_created: bool = bool(self._user_config.get("masters_created", False))
         self.default_voucher_type: VoucherType = VoucherType.PURCHASE
         self.default_purchase_ledger: str = self._user_config.get("purchase_ledger") or os.getenv(f"{env_prefix}PURCHASE_LEDGER", "Purchase")
         self.default_sales_ledger: str = self._user_config.get("sales_ledger") or os.getenv(f"{env_prefix}SALES_LEDGER", "Sales")
@@ -207,9 +210,14 @@ class CompanyConfig:
     def get_sales_ledger(self) -> str:
         return self.default_sales_ledger
 
-    def get_expense_ledger(self, description: str) -> str:
+    def get_expense_ledger(self, description: str, learner=None) -> str:
         key = description.lower().strip()
-        # Check user corrections first (highest priority)
+        # Check LedgerLearner first (self-improving, user-scoped corrections)
+        if learner is not None and hasattr(learner, "resolve"):
+            result = learner.resolve(description)
+            if result != "Suspense":
+                return result
+        # Check user corrections (legacy path)
         corrections = self._user_config.get("correction_memory") or {}
         if isinstance(corrections, dict):
             for pattern, ledger in corrections.items():
@@ -297,6 +305,7 @@ class CompanyConfig:
             "company_name": self.company_name,
             "company_gstin": self.company_gstin,
             "company_state_code": self.state_code,
+            "masters_created": self.masters_created,
             "purchase_ledger": self.default_purchase_ledger,
             "sales_ledger": self.default_sales_ledger,
             "bank_ledger": self.get_bank_ledger(),

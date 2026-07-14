@@ -69,7 +69,7 @@ check("1.1 Basic goods purchase: valid", v.passed, f"errors: {v.errors}")
 check("1.1 Basic goods purchase: balanced", abs(bal) < 0.01, f"bal={bal}")
 check("1.1 Has CGST entry", "Input CGST 9%" in xml)
 check("1.1 Has SGST entry", "Input SGST 9%" in xml)
-check("1.1 No inventory (ledger-only MVP)", "ALLINVENTORYENTRIES.LIST" not in xml)
+check("1.1 Has inventory entries", "ALLINVENTORYENTRIES.LIST" in xml)
 check("1.1 Has bill allocations", "BILLALLOCATIONS.LIST" in xml)
 check("1.1 VCHTYPE=Purchase", 'VCHTYPE="Purchase"' in xml)
 
@@ -208,7 +208,7 @@ inv = make(
 xml = gen.generate(inv)
 bal = get_xml_balance(xml)
 check("4.1 Mixed rates (5+12+18): balanced", abs(bal) < 0.01, f"bal={bal}")
-check("4.1 Ledger-only: no HSN inventory entries", "<HSNCODE>" not in xml)
+check("4.1 Has HSN in inventory entries", "<HSNCODE>" in xml)
 
 # 4.2 Single item, bulk quantity
 inv = make(line_items=[

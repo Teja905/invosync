@@ -149,3 +149,21 @@ class ProcessedBankTransaction(BankTransactionSchema):
     voucher_type: str = "Receipt"
     target_ledger: str = "Suspense"
     rule_applied: str = ""
+
+
+class ValidationReportSchema(BaseModel):
+    """API response schema for the validation pipeline."""
+
+    invoice_id: str = ""
+    invoice_number: str = ""
+    voucher_type: str = ""
+    scores: dict = {}
+    passed: bool = False
+    ready_for_tally: bool = False
+    error_count: int = 0
+    warning_count: int = 0
+    errors: list[str] = []
+    warnings: list[str] = []
+    blocking_errors: list[str] = []
+    checks: list[dict] = []
+    human_report: str = ""

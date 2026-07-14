@@ -410,6 +410,20 @@ class ExtractionPipeline:
             "_provider": standard._provider,
             "_model": standard._model,
         }
+        # Per-field confidence scoring
+        base_conf = standard.confidence or 0.0
+        field_conf = {}
+        low_risk = ["vendor_name", "buyer_name", "total_amount", "total_taxable_value"]
+        med_risk = ["invoice_number", "date", "vendor_address", "buyer_address"]
+        high_risk = ["gstin", "vendor_gstin", "buyer_gstin"]
+        for f in low_risk:
+            field_conf[f] = round(min(base_conf + 0.05, 1.0), 2)
+        for f in med_risk:
+            field_conf[f] = round(min(base_conf + 0.02, 0.95), 2)
+        for f in high_risk:
+            field_conf[f] = round(max(base_conf - 0.15, 0.1), 2)
+        result["_field_confidences"] = field_conf
+
         math_issues = validate_invoice_math(result)
         if math_issues:
             result["_math_warnings"] = math_issues

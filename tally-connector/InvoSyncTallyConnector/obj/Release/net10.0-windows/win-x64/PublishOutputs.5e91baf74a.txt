@@ -1,0 +1,2 @@
+C:\Users\Admin\Desktop\Project-Pauldirac\tally-connector\InvoSyncTallyConnector\publish\InvoSyncTallyConnector.pdb
+C:\Users\Admin\Desktop\Project-Pauldirac\tally-connector\InvoSyncTallyConnector\publish\InvoSyncTallyConnector.exe

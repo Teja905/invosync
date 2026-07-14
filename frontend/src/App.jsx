@@ -45,9 +45,9 @@ function safeJson(r) {
 function Field({ label, error, children, optional }) {
   return (
     <div>
-      <label className="gh-label">
+      <label className="premium-section-label">
         {label}
-        {optional && <span className="gh-label-optional">(optional)</span>}
+        {optional && <span className="premium-label-optional">(optional)</span>}
       </label>
       {children}
       {error && <p className="gh-error"><span>&#9888;</span>{error}</p>}
@@ -80,23 +80,23 @@ function NavBar({ active, onChange, tallyStatus }) {
   }
 
   return (
-    <div className="gh-header">
-      <div className="gh-header-inner">
-        <div className="gh-logo">
-          <div className="gh-logo-icon">I</div>
+    <div className="premium-header">
+      <div className="premium-header-inner">
+        <div className="premium-logo">
+          <div className="premium-logo-icon">I</div>
           <span>InvoSync</span>
         </div>
-        <div className="gh-tabs">
+        <div className="premium-tabs">
           {tabs.map((t) => (
             <button key={t.key} onClick={() => onChange(t.key)}
-              className={`gh-tab ${active === t.key ? "active" : ""}`}>
+              className={`premium-tab ${active === t.key ? "active" : ""}`}>
               {t.label}
             </button>
           ))}
         </div>
-        <div className="gh-status" title={statusText()}>
-          <span className={`gh-status-dot ${dotColor()}`} />
-          <span className="gh-status-label">{statusText()}</span>
+        <div className="premium-status" title={statusText()}>
+          <span className={`premium-status-dot ${dotColor()}`} />
+          <span className="premium-status-label">{statusText()}</span>
           <span style={{color:"var(--text-tertiary)", fontSize:"11px", marginLeft:"4px"}}>v3.2</span>
         </div>
       </div>
@@ -176,16 +176,16 @@ function ClientPage({ refreshKey }) {
   if (loading) return <div className="text-center py-20"><div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>;
 
   return (
-    <div className="space-y-4 animate-fadeIn">
+    <div className="space-y-4 animate-fadeInUp">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold gradient-text">Clients ({clients.length})</h2>
-        <button onClick={() => setShowForm(!showForm)} className="btn-primary text-sm px-4 py-2">
+        <h2 className="text-lg font-bold premium-gradient-text">Clients ({clients.length})</h2>
+        <button onClick={() => setShowForm(!showForm)} className="premium-btn-primary text-sm px-4 py-2">
           {showForm ? "Cancel" : "+ Add Client"}
         </button>
       </div>
 
       {showForm && (
-        <div className="glass-card p-5 space-y-4 animate-slideUp">
+        <div className="premium-card-flat p-5 space-y-4 animate-fadeInUp">
           <h3 className="text-sm font-semibold text-gray-200">New Client</h3>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
@@ -202,15 +202,15 @@ function ClientPage({ refreshKey }) {
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
-            <button onClick={() => setShowForm(false)} className="btn-secondary text-sm px-4 py-2">Cancel</button>
-            <button onClick={addClient} className="btn-primary text-sm px-4 py-2">Save Client</button>
+            <button onClick={() => setShowForm(false)} className="premium-btn-secondary text-sm px-4 py-2">Cancel</button>
+            <button onClick={addClient} className="premium-btn-primary text-sm px-4 py-2">Save Client</button>
           </div>
         </div>
       )}
 
       {editingClient && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn" onClick={cancelEdit}>
-          <div className="glass-card p-5 space-y-4 w-full max-w-lg animate-slideUp" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeInUp" onClick={cancelEdit}>
+          <div className="premium-card-flat p-5 space-y-4 w-full max-w-lg animate-fadeInUp" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-sm font-semibold text-gray-200">Edit Client</h3>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
@@ -227,15 +227,15 @@ function ClientPage({ refreshKey }) {
               </div>
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <button onClick={cancelEdit} className="btn-secondary text-sm px-4 py-2">Cancel</button>
-              <button onClick={saveEdit} className="btn-primary text-sm px-4 py-2">Save Changes</button>
+              <button onClick={cancelEdit} className="premium-btn-secondary text-sm px-4 py-2">Cancel</button>
+              <button onClick={saveEdit} className="premium-btn-primary text-sm px-4 py-2">Save Changes</button>
             </div>
           </div>
         </div>
       )}
 
       {clients.length === 0 ? (
-        <div className="gh-card" style={{padding:"48px 20px", textAlign:"center"}}>
+        <div className="premium-card" style={{padding:"48px 20px", textAlign:"center"}}>
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" style={{margin:"0 auto 16px", opacity:0.3}}>
             <path d="M3 7V5a2 2 0 012-2h14a2 2 0 012 2v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
             <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7" stroke="currentColor" strokeWidth="1.5"/>
@@ -246,8 +246,8 @@ function ClientPage({ refreshKey }) {
           <p style={{color:"var(--text-tertiary)", fontSize:"13px"}}>Add your first client to start processing invoices.</p>
         </div>
       ) : (
-        <div className="gh-card">
-          <table className="gh-table">
+        <div className="premium-card">
+          <table className="premium-table">
             <thead><tr>
               <th>Company</th>
               <th>Contact</th>
@@ -257,7 +257,7 @@ function ClientPage({ refreshKey }) {
             </tr></thead>
             <tbody>
               {clients.map((c) => (
-                <tr key={c.client_id} className="table-row">
+                <tr key={c.client_id} className="premium-table-row">
                   <td>{c.company_name}</td>
                   <td>{c.client_name}</td>
                   <td className="font-mono text-xs">{c.gstin || <span className="text-tertiary">N/A</span>}</td>
@@ -570,19 +570,19 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
   }
 
   return (
-    <div className="space-y-5 animate-fadeIn">
-      <div className="gh-card" style={{display:"flex", alignItems:"center", gap:"12px", padding:"12px 16px"}}>
-        <span className="gh-label" style={{margin:0, whiteSpace:"nowrap"}}>Client:</span>
-        <select className="gh-input" value={selectedClient} onChange={(e) => setSelectedClient(e.target.value)}>
+    <div className="space-y-5 animate-fadeInUp">
+      <div className="premium-card" style={{display:"flex", alignItems:"center", gap:"12px", padding:"12px 16px"}}>
+        <span className="premium-section-label" style={{margin:0, whiteSpace:"nowrap"}}>Client:</span>
+        <select className="premium-input" value={selectedClient} onChange={(e) => setSelectedClient(e.target.value)}>
           <option value="">-- Select a client --</option>
           {clients.map((c) => (
             <option key={c.client_id} value={c.client_id}>{c.company_name} ({c.client_name})</option>
           ))}
         </select>
-        {clients.length === 0 && <span className="gh-tag gh-tag-yellow" style={{whiteSpace:"nowrap"}}>Add clients first</span>}
+        {clients.length === 0 && <span className="premium-badge premium-badge-warning" style={{whiteSpace:"nowrap"}}>Add clients first</span>}
       </div>
 
-      <div {...getRootProps()} className={`gh-dropzone ${isDragActive ? "active" : ""}`}>
+      <div {...getRootProps()} className={`premium-dropzone ${isDragActive ? "active" : ""}`}>
         <input {...getInputProps()} />
         {extracting ? (
           <div className="flex flex-col items-center gap-3">
@@ -605,14 +605,14 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
       </div>
 
       {errors._general && (
-        <div className="gh-alert gh-alert-error animate-fadeIn">
+        <div className="premium-alert premium-alert-error animate-fadeInUp">
           <span>&#9888;</span>
           <span>{errors._general}</span>
         </div>
       )}
 
       {dupWarning && (
-        <div className="gh-alert gh-alert-warning animate-fadeIn">
+        <div className="premium-alert premium-alert-warning animate-fadeInUp">
           <span>&#9888;</span>
           <span>{typeof dupWarning === "string" ? dupWarning : dupWarning.message}</span>
         </div>
@@ -621,9 +621,9 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
       {validation && <ValidationSummary validation={validation} />}
 
       {showForm && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 animate-slideUp" style={{ animationDelay: "0.1s" }}>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 animate-fadeInUp" style={{ animationDelay: "0.1s" }}>
           <div className="space-y-4">
-            <div className="gh-card" style={{padding:"16px"}}>
+            <div className="premium-card" style={{padding:"16px"}}>
               <h3 className="text-xs font-medium uppercase tracking-wider mb-3" style={{color:"var(--text-secondary)", letterSpacing:"0.5px"}}>Invoice Document</h3>
               {imageUrl ? (
                 <div className="rounded-lg overflow-hidden bg-black/20">
@@ -645,7 +645,7 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
               )}
             </div>
             {form.confidence != null && (
-              <div className="glass-card p-4">
+              <div className="premium-card-flat p-4">
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-gray-400">AI Confidence:</span>
                   <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden max-w-[200px]">
@@ -667,11 +667,11 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
             )}
           </div>
 
-          <div className="gh-card" style={{padding:"20px"}}>
+          <div className="premium-card" style={{padding:"20px"}}>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-medium uppercase tracking-wider" style={{color:"var(--text-secondary)", letterSpacing:"0.5px"}}>Extracted Fields</h3>
               {(form.confidence != null && form.confidence < 0.7) && (
-                <span className="tag tag-yellow text-[10px]">{'\u26A0'} Needs Review</span>
+                <span className="premium-badge premium-badge-warning text-[10px]">{'\u26A0'} Needs Review</span>
               )}
             </div>
 
@@ -721,11 +721,11 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
             <div className="pt-2">
               <div className="flex items-center justify-between mb-3">
                 <label className="text-sm font-medium text-gray-300">Line Items</label>
-                <button onClick={() => { setForm((p) => ({ ...p, line_items: [...p.line_items, { description: "", quantity: 1, rate: 0, taxable_value: 0, tax_rate: 0, ledger_name: "" }] })); setLedgers((p) => [...p, ""]); }} className="btn-secondary text-xs px-3 py-1.5">+ Add Item</button>
+                <button onClick={() => { setForm((p) => ({ ...p, line_items: [...p.line_items, { description: "", quantity: 1, rate: 0, taxable_value: 0, tax_rate: 0, ledger_name: "" }] })); setLedgers((p) => [...p, ""]); }} className="premium-btn-secondary text-xs px-3 py-1.5">+ Add Item</button>
               </div>
               {errors.line_items && <p className="text-red-400 text-xs mb-2">{errors.line_items}</p>}
               {form.line_items.map((item, i) => (
-                <div key={i} className={`glass rounded-xl p-3 mb-2 space-y-2 border ${form.confidence != null && form.confidence < 0.7 ? "border-yellow-500/15" : "border-white/5"} animate-fadeIn`} style={{ animationDelay: `${i * 0.05}s` }}>
+                <div key={i} className={`premium-card rounded-xl p-3 mb-2 space-y-2 border ${form.confidence != null && form.confidence < 0.7 ? "border-yellow-500/15" : "border-white/5"} animate-fadeInUp`} style={{ animationDelay: `${i * 0.05}s` }}>
                   <div className="flex justify-between items-center">
                     <span className="text-xs font-medium text-gray-500">Item {i+1}</span>
                     <button onClick={() => { setForm((p) => ({ ...p, line_items: p.line_items.filter((_, j) => j !== i) })); setLedgers((p) => p.filter((_, j) => j !== i)); }} className="text-xs text-red-400 hover:text-red-300">Remove</button>
@@ -768,7 +768,7 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
             </div>
 
             {showPreview && mastersPreview && (
-              <div className="glass-card p-3 space-y-2 border border-indigo-500/20">
+              <div className="premium-card-flat p-3 space-y-2 border border-indigo-500/20">
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-semibold text-indigo-300">Pre-Import Report</h4>
                   <button onClick={() => setShowPreview(false)} className="text-xs text-gray-500 hover:text-gray-300">Hide</button>
@@ -818,29 +818,29 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
             )}
 
             <div className="flex gap-2 pt-2 flex-wrap">
-              <button onClick={previewMasters} disabled={previewLoading} className="btn-secondary text-xs px-3 py-2">
+              <button onClick={previewMasters} disabled={previewLoading} className="premium-btn-secondary text-xs px-3 py-2">
                 {previewLoading ? "Loading..." : "Preview Masters"}
               </button>
 
               {!reviewConfirmed ? (
-                <button onClick={doReviewConfirm} className="btn-primary flex-1 py-2.5 text-sm">
+                <button onClick={doReviewConfirm} className="premium-btn-primary flex-1 py-2.5 text-sm">
                   Review &amp; Confirm
                 </button>
               ) : (
-                <button onClick={() => downloadXML()} className="btn-primary flex-1 py-2.5 text-sm">
+                <button onClick={() => downloadXML()} className="premium-btn-primary flex-1 py-2.5 text-sm">
                   Download XML
                 </button>
               )}
 
-              <button onClick={resetForm} className="btn-secondary text-xs px-3 py-2">Clear</button>
+              <button onClick={resetForm} className="premium-btn-secondary text-xs px-3 py-2">Clear</button>
             </div>
           </div>
         </div>
       )}
 
       {showValModal && valModalData && (
-        <div className="gh-modal-overlay" onClick={() => setShowValModal(false)}>
-          <div className="gh-modal" style={{padding:"24px"}} onClick={(e) => e.stopPropagation()}>
+        <div className="premium-modal-overlay" onClick={() => setShowValModal(false)}>
+          <div className="premium-modal" style={{padding:"24px"}} onClick={(e) => e.stopPropagation()}>
             <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"16px"}}>
               <h3 style={{fontSize:"16px", fontWeight:600}}>Validation Results</h3>
               <button onClick={() => setShowValModal(false)} style={{color:"var(--text-tertiary)", background:"none", border:"none", fontSize:"20px", cursor:"pointer"}}>&times;</button>
@@ -848,7 +848,7 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
 
             {valModalData.warnings.length > 0 && (
               <div style={{marginBottom:"12px"}}>
-                <p className="gh-tag gh-tag-yellow" style={{marginBottom:"6px"}}>Warnings</p>
+                <p className="premium-badge premium-badge-warning" style={{marginBottom:"6px"}}>Warnings</p>
                 {valModalData.warnings.map((w, i) => (
                   <p key={i} style={{fontSize:"12px", color:"var(--accent-yellow)", paddingLeft:"8px", borderLeft:"2px solid rgba(210,153,34,0.3)", marginBottom:"4px"}}>{w}</p>
                 ))}
@@ -857,7 +857,7 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
 
             {valModalData.soft.length > 0 && (
               <div style={{marginBottom:"12px"}}>
-                <p className="gh-tag gh-tag-yellow" style={{marginBottom:"6px"}}>Soft Errors (overridable)</p>
+                <p className="premium-badge premium-badge-warning" style={{marginBottom:"6px"}}>Soft Errors (overridable)</p>
                 {valModalData.soft.map((e, i) => (
                   <p key={i} style={{fontSize:"12px", color:"var(--accent-yellow)", paddingLeft:"8px", borderLeft:"2px solid rgba(210,153,34,0.3)", marginBottom:"4px"}}>{e}</p>
                 ))}
@@ -866,7 +866,7 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
 
             {valModalData.blocking.length > 0 && (
               <div style={{marginBottom:"16px"}}>
-                <p className="gh-tag gh-tag-red" style={{marginBottom:"6px"}}>Blocking Errors</p>
+                <p className="premium-badge premium-badge-danger" style={{marginBottom:"6px"}}>Blocking Errors</p>
                 {valModalData.blocking.map((e, i) => (
                   <p key={i} style={{fontSize:"12px", color:"var(--accent-red)", paddingLeft:"8px", borderLeft:"2px solid rgba(248,81,73,0.3)", marginBottom:"4px"}}>{e}</p>
                 ))}
@@ -875,11 +875,11 @@ function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, s
 
             <div style={{display:"flex", gap:"8px", paddingTop:"8px"}}>
               <button onClick={() => { setShowValModal(false); downloadXML(true); }}
-                className="gh-btn gh-btn-primary" style={{flex:1, justifyContent:"center", padding:"10px"}}>
+                className="premium-btn premium-btn-primary" style={{flex:1, justifyContent:"center", padding:"10px"}}>
                 Generate Anyway
               </button>
               <button onClick={() => setShowValModal(false)}
-                className="gh-btn gh-btn-secondary" style={{flex:1, justifyContent:"center", padding:"10px"}}>
+                className="premium-btn premium-btn-secondary" style={{flex:1, justifyContent:"center", padding:"10px"}}>
                 Back to Edit
               </button>
             </div>
@@ -900,13 +900,13 @@ function ValidationSummary({ validation }) {
   const blockingErrors = validation.blocking_errors || [];
   const statutoryChecks = ["statutory_routing", "gst_structure", "gstin", "tax_rates"];
   return (
-    <div className="gh-card" style={{padding:"16px"}}>
+    <div className="premium-card" style={{padding:"16px"}}>
       <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"12px"}}>
         <div style={{display:"flex", alignItems:"center", gap:"8px"}}>
           <span style={{fontSize:"12px", color:"var(--text-secondary)"}}>Document:</span>
           <span style={{fontSize:"13px", fontWeight:600, textTransform:"capitalize"}}>{(validation.document_type || "unknown").replace(/_/g, " ")}</span>
         </div>
-        <span className={`gh-tag ${validation.passed ? "gh-tag-green" : "gh-tag-red"}`}>
+        <span className={`premium-badge ${validation.passed ? "premium-badge premium-badge-success" : "premium-badge premium-badge-danger"}`}>
           {validation.passed ? "PASS" : "FAIL"}
         </span>
       </div>
@@ -914,8 +914,8 @@ function ValidationSummary({ validation }) {
         {checks.map(([name, result]) => {
           const isStatutory = statutoryChecks.includes(name);
           return (
-            <div key={name} className={`gh-tag ${
-              result.pass ? (result.warnings?.length ? "gh-tag-yellow" : isStatutory ? "gh-tag-blue" : "gh-tag-green") : "gh-tag-red"
+            <div key={name} className={`premium-badge ${
+              result.pass ? (result.warnings?.length ? "premium-badge premium-badge-warning" : isStatutory ? "premium-badge premium-badge-info" : "premium-badge premium-badge-success") : "premium-badge premium-badge-danger"
             }`}>
               <span>{result.pass ? (result.warnings?.length ? "\u26A0" : "\u2713") : "\u2717"}</span>
               <span className="capitalize">{name.replace(/_/g, " ")}</span>
@@ -925,7 +925,7 @@ function ValidationSummary({ validation }) {
       </div>
       {warnings.length > 0 && (
         <div style={{marginBottom:"8px"}}>
-          <p className="gh-tag gh-tag-yellow" style={{marginBottom:"6px"}}>Warnings</p>
+          <p className="premium-badge premium-badge-warning" style={{marginBottom:"6px"}}>Warnings</p>
           {warnings.map((w, i) => (
             <p key={i} style={{fontSize:"12px", color:"var(--accent-yellow)", paddingLeft:"8px", borderLeft:"2px solid rgba(210,153,34,0.3)", marginBottom:"4px"}}>{w}</p>
           ))}
@@ -933,7 +933,7 @@ function ValidationSummary({ validation }) {
       )}
       {softErrors.length > 0 && (
         <div style={{marginBottom:"8px"}}>
-          <p className="gh-tag gh-tag-yellow" style={{marginBottom:"6px"}}>Soft Errors</p>
+          <p className="premium-badge premium-badge-warning" style={{marginBottom:"6px"}}>Soft Errors</p>
           {softErrors.map((e, i) => (
             <p key={i} style={{fontSize:"12px", color:"var(--accent-yellow)", paddingLeft:"8px", borderLeft:"2px solid rgba(210,153,34,0.3)", marginBottom:"4px"}}>{e}</p>
           ))}
@@ -941,7 +941,7 @@ function ValidationSummary({ validation }) {
       )}
       {blockingErrors.length > 0 && (
         <div>
-          <p className="gh-tag gh-tag-red" style={{marginBottom:"6px"}}>Blocking Errors</p>
+          <p className="premium-badge premium-badge-danger" style={{marginBottom:"6px"}}>Blocking Errors</p>
           {blockingErrors.map((e, i) => (
             <p key={i} style={{fontSize:"12px", color:"var(--accent-red)", paddingLeft:"8px", borderLeft:"2px solid rgba(248,81,73,0.3)", marginBottom:"4px"}}>{e}</p>
           ))}
@@ -1060,16 +1060,16 @@ function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice }) {
   if (loading) return <div className="text-center py-20"><div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>;
 
   return (
-    <div className="space-y-4 animate-fadeIn">
+    <div className="space-y-4 animate-fadeInUp">
       {actionMsg && (
-        <div className={`glass rounded-xl p-4 text-sm flex items-center gap-2 ${
+        <div className={`premium-card rounded-xl p-4 text-sm flex items-center gap-2 ${
           actionMsg.type === "error" ? "border-red-500/20 text-red-300"
           : actionMsg.type === "success" ? "border-green-500/20 text-green-300"
           : "border-indigo-500/20 text-indigo-300"
         }`}>{actionMsg.text}</div>
       )}
 
-      <div className="glass rounded-xl px-4 py-3 flex items-center gap-3">
+      <div className="premium-card rounded-xl px-4 py-3 flex items-center gap-3">
         <label className="text-sm text-gray-300 whitespace-nowrap">Filter by client:</label>
         <select className="input max-w-xs" value={filterClient} onChange={(e) => setFilterClient(e.target.value)}>
           <option value="">All Clients</option>
@@ -1080,21 +1080,21 @@ function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice }) {
       </div>
 
       {invoices.length === 0 ? (
-        <div className="glass-card p-12 text-center">
+        <div className="premium-card-flat p-12 text-center">
           <p className="text-gray-400 text-lg">No invoices yet.</p>
           <p className="text-gray-500 text-sm mt-2">Go to Extract tab to process invoices.</p>
         </div>
       ) : (
         <div>
           {selectedIds.length > 0 && (
-            <div className="glass rounded-xl px-4 py-3 mb-3 flex items-center gap-3">
+            <div className="premium-card rounded-xl px-4 py-3 mb-3 flex items-center gap-3">
               <span className="text-xs text-gray-400">{selectedIds.length} selected</span>
               <input className="input flex-1 text-xs" value={bulkLedger} onChange={(e) => setBulkLedger(e.target.value)} placeholder="Target ledger name..." />
               <button onClick={applyBulkMap} className="px-3 py-1.5 bg-indigo-500/20 text-indigo-300 rounded-lg text-xs font-medium hover:bg-indigo-500/30">Apply to Selected</button>
               <button onClick={() => setSelectedIds([])} className="text-xs text-gray-500 hover:text-gray-300">Clear</button>
             </div>
           )}
-          <div className="glass-card overflow-hidden">
+          <div className="premium-card-flat overflow-hidden">
             <table className="w-full text-sm">
               <thead><tr className="border-b border-white/5 text-left text-xs text-gray-500 uppercase">
                 <th className="px-2 py-3.5 w-8">
@@ -1111,7 +1111,7 @@ function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice }) {
               </tr></thead>
               <tbody className="divide-y divide-white/5">
                 {invoices.map((inv) => (
-                  <tr key={inv.id} className={`table-row cursor-pointer hover:bg-white/[0.03] ${selectedIds.includes(inv.id) ? "bg-indigo-500/5" : ""}`} onClick={() => onEditInvoice(inv.id)}>
+                  <tr key={inv.id} className={`premium-table-row cursor-pointer hover:bg-white/[0.03] ${selectedIds.includes(inv.id) ? "bg-indigo-500/5" : ""}`} onClick={() => onEditInvoice(inv.id)}>
                     <td className="px-2 py-3.5">
                       <input type="checkbox" className="accent-indigo-500" checked={selectedIds.includes(inv.id)} onChange={(e) => { e.stopPropagation(); toggleSelect(inv.id); }} onClick={(e) => e.stopPropagation()} />
                     </td>
@@ -1122,13 +1122,13 @@ function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice }) {
                   <td className="px-4 py-3.5">
                     <div className="flex items-center gap-1.5">
                       {inv.status === "draft" ? (
-                        <span className="tag tag-yellow text-[10px]">Draft</span>
+                        <span className="premium-badge premium-badge-warning text-[10px]">Draft</span>
                       ) : inv.status === "validated" ? (
-                        <span className="tag tag-green text-[10px]">Reviewed</span>
+                        <span className="premium-badge premium-badge-success text-[10px]">Reviewed</span>
                       ) : inv.status === "exported" ? (
-                        <span className="tag tag-blue text-[10px]">Exported</span>
+                        <span className="premium-badge premium-badge-info text-[10px]">Exported</span>
                       ) : (
-                        <span className="tag tag-gray text-[10px]">{inv.status || "Pending"}</span>
+                        <span className="premium-badge premium-badge-neutral text-[10px]">{inv.status || "Pending"}</span>
                       )}
                       {inv.decision_label && inv.decision_label !== "Unknown" && (
                         <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full`}
@@ -1179,7 +1179,7 @@ function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice }) {
 
       {showDashModal && dashModalData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { setShowDashModal(false); setDashPendingInv(null); }}>
-          <div className="glass-card max-w-lg w-full mx-4 p-6 space-y-4 animate-slideUp" onClick={(e) => e.stopPropagation()}>
+          <div className="premium-card-flat max-w-lg w-full mx-4 p-6 space-y-4 animate-fadeInUp" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold text-gray-200">Validation Results</h3>
               <button onClick={() => { setShowDashModal(false); setDashPendingInv(null); }} className="text-gray-500 hover:text-gray-300 text-xl">&times;</button>
@@ -1214,11 +1214,11 @@ function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice }) {
 
             <div className="flex gap-3 pt-2">
               <button onClick={() => { const inv = dashPendingInv; setShowDashModal(false); setDashPendingInv(null); if (inv) generateXml(inv, true); }}
-                className="btn-primary flex-1 py-2.5 text-sm">
+                className="premium-btn-primary flex-1 py-2.5 text-sm">
                 Generate Anyway
               </button>
               <button onClick={() => { setShowDashModal(false); setDashPendingInv(null); }}
-                className="btn-secondary flex-1 py-2.5 text-sm">
+                className="premium-btn-secondary flex-1 py-2.5 text-sm">
                 Cancel
               </button>
             </div>
@@ -1242,9 +1242,9 @@ function AdminPage() {
   if (loading) return <div className="text-center py-20"><div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>;
 
   return (
-    <div className="space-y-4 animate-fadeIn">
-      <h2 className="text-lg font-bold gradient-text">Users ({users.length})</h2>
-      <div className="glass-card overflow-hidden">
+    <div className="space-y-4 animate-fadeInUp">
+      <h2 className="text-lg font-bold premium-gradient-text">Users ({users.length})</h2>
+      <div className="premium-card-flat overflow-hidden">
         <table className="w-full text-sm">
           <thead><tr className="border-b border-white/5 text-left text-xs text-gray-500 uppercase">
             <th className="px-4 py-3.5 font-medium">Email</th>
@@ -1255,10 +1255,10 @@ function AdminPage() {
           </tr></thead>
           <tbody className="divide-y divide-white/5">
             {users.map((u) => (
-              <tr key={u.email} className="table-row">
+              <tr key={u.email} className="premium-table-row">
                 <td className="px-4 py-3.5 font-medium text-gray-200">{u.email}</td>
                 <td className="px-4 py-3.5 text-gray-300">{u.name || "-"}</td>
-                <td className="px-4 py-3.5"><span className={`tag ${u.role === "admin" ? "tag-yellow" : "tag-green"}`}>{u.role}</span></td>
+                <td className="px-4 py-3.5"><span className={`premium-badge ${u.role === "admin" ? "premium-badge premium-badge-warning" : "premium-badge premium-badge-success"}`}>{u.role}</span></td>
                 <td className="px-4 py-3.5 text-center text-gray-400">{u.invoice_count || 0}</td>
                 <td className="px-4 py-3.5 text-xs text-gray-500">{u.created_at ? u.created_at.slice(0, 10) : "-"}</td>
               </tr>
@@ -1322,10 +1322,10 @@ function SettingsPage() {
   }
 
   return (
-    <div className="space-y-4 animate-fadeIn">
-      <h2 className="text-lg font-bold gradient-text">Company Settings</h2>
+    <div className="space-y-4 animate-fadeInUp">
+      <h2 className="text-lg font-bold premium-gradient-text">Company Settings</h2>
       <p className="text-sm text-gray-400">These settings are used for all invoices and XML generation.</p>
-      <form onSubmit={handleSave} className="glass-card p-6 space-y-4 max-w-2xl">
+      <form onSubmit={handleSave} className="premium-card-flat p-6 space-y-4 max-w-2xl">
         <div>
           <label className="text-xs text-gray-500 mb-1 block">Company Name (as in Tally) *</label>
           <input className="input w-full" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="e.g. My Firm & Co." />
@@ -1401,12 +1401,12 @@ function SettingsPage() {
         </div>
         {error && <p className="text-red-400 text-sm">{error}</p>}
         {saved && <p className="text-green-400 text-sm">Settings saved successfully.</p>}
-        <button type="submit" disabled={busy} className="btn-primary py-3 px-6">
+        <button type="submit" disabled={busy} className="premium-btn-primary py-3 px-6">
           {busy ? "Saving..." : "Save Settings"}
         </button>
       </form>
 
-      <div className="glass-card p-6 max-w-2xl">
+      <div className="premium-card-flat p-6 max-w-2xl">
         <h3 className="text-sm font-semibold text-gray-200 mb-3">Ledger Corrections</h3>
         <p className="text-xs text-gray-500 mb-3">When a description maps to the wrong ledger, add a correction here. It will be remembered for future invoices.</p>
         <CorrectionMemoryUI />
@@ -1418,9 +1418,9 @@ function SettingsPage() {
 }
 
 function TallyConnectorPanel() {
-  const downloadUrl = "https://github.com/Teja905/invosync/releases/latest/download/InvoSyncTallyConnector.exe";
+  const downloadUrl = "https://github.com/Teja905/invosync/releases/latest/download/InvoSyncTallyConnector-v3.2.zip";
   return (
-    <div className="glass-card p-6 max-w-2xl">
+    <div className="premium-card-flat p-6 max-w-2xl">
       <div className="flex items-start gap-4">
         <div className="p-3 rounded-lg" style={{background:"var(--accent-alpha)", color:"var(--accent)"}}>
           <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1434,7 +1434,7 @@ function TallyConnectorPanel() {
           </p>
           <div className="mt-4 flex items-center gap-3">
             <a href={downloadUrl} download
-               className="btn-primary inline-flex items-center gap-2 text-sm py-2.5 px-5">
+               className="premium-btn-primary inline-flex items-center gap-2 text-sm py-2.5 px-5">
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
               </svg>
@@ -1493,10 +1493,10 @@ function BankingPage() {
   }
 
   return (
-    <div className="space-y-4 animate-fadeIn">
-      <h2 className="text-lg font-bold gradient-text">Bank Statement Automation</h2>
+    <div className="space-y-4 animate-fadeInUp">
+      <h2 className="text-lg font-bold premium-gradient-text">Bank Statement Automation</h2>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="glass-card p-5 space-y-3">
+        <div className="premium-card-flat p-5 space-y-3">
           <h3 className="text-sm font-semibold text-gray-200">Keyword Rules</h3>
           <p className="text-xs text-gray-400">Map keywords → voucher type + ledger (e.g. "Razorpay" → Receipt → URD Debtors)</p>
           {loading ? <p className="text-xs text-gray-500">Loading...</p> : (
@@ -1528,7 +1528,7 @@ function BankingPage() {
             <button onClick={addRule} className="px-3 py-2 bg-indigo-500/20 text-indigo-300 rounded-lg text-xs font-medium hover:bg-indigo-500/30">Add</button>
           </div>
         </div>
-        <div className="glass-card p-5 space-y-3">
+        <div className="premium-card-flat p-5 space-y-3">
           <h3 className="text-sm font-semibold text-gray-200">Process Statement</h3>
           <p className="text-xs text-gray-400">Paste JSON array of transactions, click Process</p>
           <div className="flex gap-2">
@@ -1635,7 +1635,7 @@ function CorrectionMemoryUI() {
         <input className="input flex-1 text-xs" placeholder="Ledger (e.g. Professional Charges)"
           value={newLedger} onChange={(e) => setNewLedger(e.target.value)} />
         <button onClick={addCorrection} disabled={saving || !newDesc.trim() || !newLedger.trim()}
-          className="btn-primary text-xs px-3 py-1.5 shrink-0">Save</button>
+          className="premium-btn-primary text-xs px-3 py-1.5 shrink-0">Save</button>
       </div>
       {entries.length > 0 && (
         <button onClick={clearAll} className="text-xs text-red-400 hover:text-red-300 mt-3">Clear all</button>
@@ -1653,10 +1653,10 @@ class ErrorBoundary extends React.Component {
     if (this.state.error) {
       return (
         <div className="min-h-screen flex items-center justify-center p-8">
-          <div className="glass-card p-8 max-w-lg text-center space-y-4">
+          <div className="premium-card-flat p-8 max-w-lg text-center space-y-4">
             <p className="text-red-400 text-lg font-semibold">Something went wrong</p>
             <p className="text-gray-400 text-sm">{this.state.error.message}</p>
-            <button onClick={() => this.setState({ error: null })} className="btn-primary px-6 py-2">Try Again</button>
+            <button onClick={() => this.setState({ error: null })} className="premium-btn-primary px-6 py-2">Try Again</button>
           </div>
         </div>
       );
@@ -1736,7 +1736,7 @@ export default function App() {
     <ErrorBoundary>
     <div className="min-h-screen">
       <NavBar active={page} onChange={(p) => { setPage(p); if (p === "dashboard") setRefreshKey((k) => k + 1); if (p === "clients") setRefreshKey((k) => k + 1); }} tallyStatus={tallyStatus} />
-      <div className="gh-page" ref={pageRef}>
+      <div className="premium-page" ref={pageRef}>
         {page === "extract" ? (
           <ExtractPage form={form} setForm={setForm} currentId={currentId} setCurrentId={setCurrentId} selectedClient={selectedClient} setSelectedClient={setSelectedClient} ledgers={ledgers} setLedgers={setLedgers} reviewConfirmed={reviewConfirmed} setReviewConfirmed={setReviewConfirmed} reviewErrors={reviewErrors} setReviewErrors={setReviewErrors} />
         ) : page === "clients" ? (
