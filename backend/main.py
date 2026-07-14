@@ -56,9 +56,22 @@ from schemas import (
 )
 import validation as val
 from validators.pipeline import ValidationPipeline
-_AUTH_ENABLED = os.getenv("AUTH_ENABLED", "").lower() in ("true", "1", "yes")
-from auth import router as auth_router
-from auth import get_current_user as _jwt_user, decode_jwt
+_AUTH_ENABLED = False
+
+
+def _default_user() -> dict:
+    """Return default user for demo/no-auth mode."""
+    return {
+        "email": "demo@local",
+        "user_id": "demo",
+        "role": "admin",
+        "company_name": os.getenv("COMPANY_NAME", "Demo Company"),
+        "company_gstin": os.getenv("COMPANY_GSTIN", ""),
+        "company_state_code": os.getenv("COMPANY_STATE_CODE", "27"),
+    }
+
+
+get_authenticated_user = _default_user
 
 
 load_dotenv()
@@ -171,7 +184,12 @@ async def http_exception_and_timing_middleware(request: Request, call_next):
             },
         )
 
-app.include_router(auth_router)
+
+
+@app.post("/api/auth/login")
+async def demo_login(body: dict):
+    return {"token": "demo-token", "refresh_token": "demo-refresh", "email": body.get("email", "demo@local")}
+
 
 val.COMPANY_STATE_CODE = _company_config.state_code
 
@@ -291,11 +309,9 @@ async def _default_user() -> dict:
     return base
 
 
-async def get_authenticated_user() -> dict:
-    """Gate: returns JWT-authenticated user or falls back to _default_user (dev mode)."""
-    if _AUTH_ENABLED:
-        return await _jwt_user()
-    return await _default_user()
+def get_authenticated_user() -> dict:
+    """Demo mode: return default user without auth."""
+    return _default_user()
 
 
 class LineItemModel(BaseModel):
@@ -413,23 +429,6 @@ async def startup():
     except Exception as e:
         logger.warning("MongoDB connection failed (%s). Running without database.", e)
         logger.warning("Invoice data will NOT be persisted across restarts.")
-    
-    # Seed default admin user if no users exist (for connector / API login)
-    try:
-        if db.users is not None:
-            count = await db.users.count_documents({})
-            if count == 0:
-                from auth import _hash_password
-                await db.users.insert_one({
-                    "email": "admin@example.com",
-                    "password_hash": _hash_password("admin123"),
-                    "name": "Admin",
-                    "role": "admin",
-                    "created_at": datetime.now(timezone.utc),
-                })
-                logger.info("Seeded default admin user: admin@example.com / admin123")
-    except Exception as e:
-        logger.warning("Default user seeding failed: %s", e)
     
     has_openrouter = bool(os.getenv("OPENROUTER_API_KEY"))
     has_gemini = bool(os.getenv("GEMINI_API_KEY"))
