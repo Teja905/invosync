@@ -50,6 +50,7 @@ from ocr_postproc import fix_gstin, fix_date, fix_amount, clean_extracted_invoic
 from core.logging import get_logger
 from core.debug import time_it
 from audit_log import audit as audit_logger
+from crypto_utils import encrypt, decrypt
 from schemas import (
     StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry,
     DocumentClass, ALLOWED_GST_SLABS, GST_STATE_CODES,
@@ -57,21 +58,6 @@ from schemas import (
 import validation as val
 from validators.pipeline import ValidationPipeline
 _AUTH_ENABLED = False
-
-
-def _default_user() -> dict:
-    """Return default user for demo/no-auth mode."""
-    return {
-        "email": "demo@local",
-        "user_id": "demo",
-        "role": "admin",
-        "company_name": os.getenv("COMPANY_NAME", "Demo Company"),
-        "company_gstin": os.getenv("COMPANY_GSTIN", ""),
-        "company_state_code": os.getenv("COMPANY_STATE_CODE", "27"),
-    }
-
-
-get_authenticated_user = _default_user
 
 
 load_dotenv()
@@ -136,7 +122,7 @@ _ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS if "*" not in _ALLOWED_ORIGINS else ["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -309,9 +295,9 @@ async def _default_user() -> dict:
     return base
 
 
-def get_authenticated_user() -> dict:
+async def get_authenticated_user() -> dict:
     """Demo mode: return default user without auth."""
-    return _default_user()
+    return await _default_user()
 
 
 class LineItemModel(BaseModel):
