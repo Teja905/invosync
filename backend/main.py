@@ -171,8 +171,7 @@ async def http_exception_and_timing_middleware(request: Request, call_next):
             },
         )
 
-if _AUTH_ENABLED:
-    app.include_router(auth_router)
+app.include_router(auth_router)
 
 val.COMPANY_STATE_CODE = _company_config.state_code
 
@@ -414,6 +413,24 @@ async def startup():
     except Exception as e:
         logger.warning("MongoDB connection failed (%s). Running without database.", e)
         logger.warning("Invoice data will NOT be persisted across restarts.")
+    
+    # Seed default admin user if no users exist (for connector / API login)
+    try:
+        if db.users is not None:
+            count = await db.users.count_documents({})
+            if count == 0:
+                from auth import _hash_password
+                await db.users.insert_one({
+                    "email": "admin@example.com",
+                    "password_hash": _hash_password("admin123"),
+                    "name": "Admin",
+                    "role": "admin",
+                    "created_at": datetime.now(timezone.utc),
+                })
+                logger.info("Seeded default admin user: admin@example.com / admin123")
+    except Exception as e:
+        logger.warning("Default user seeding failed: %s", e)
+    
     has_openrouter = bool(os.getenv("OPENROUTER_API_KEY"))
     has_gemini = bool(os.getenv("GEMINI_API_KEY"))
     logger.info("API keys: OpenRouter=%s Gemini=%s (using fallback=%s)",
