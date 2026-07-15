@@ -57,6 +57,16 @@ from schemas import (
 )
 import validation as val
 from validators.pipeline import ValidationPipeline
+from config.settings import (
+    COMPANY_CONFIG_FIELDS, config_overrides, user_config_from_current,
+    make_xml_generator, run_validation_pipeline, default_user,
+)
+from api.app_state import (
+    extraction_pipeline, company_config, xml_generator, ledger_engine,
+    learner, validation_pipeline as vp,
+    api_rules_engine, api_context_classifier,
+    extraction_queue, processing_tasks, MAX_CONCURRENT_EXTRACTIONS, TASK_TTL_SECONDS,
+)
 _AUTH_ENABLED = False
 
 
@@ -64,11 +74,17 @@ load_dotenv()
 
 logger = get_logger(__name__)
 
-# Global ledger learner — self-improving, user-scoped correction engine
-_learner = LedgerLearner(db=db)
-
-# Global validation pipeline — runs all validators on every generation
-_validation_pipeline = ValidationPipeline()
+# Convenience aliases for refactored names
+_learner = learner
+_validation_pipeline = vp
+_extraction_pipeline = extraction_pipeline
+_company_config = company_config
+_xml_generator = xml_generator
+_ledger_engine = ledger_engine
+_api_rules_engine = api_rules_engine
+_api_context_classifier = api_context_classifier
+extraction_queue = globals().get('extraction_queue') or asyncio.Queue()
+processing_tasks = globals().get('processing_tasks') or {}
 
 
 class ClientCreate(BaseModel):
@@ -96,18 +112,6 @@ def _is_valid_image(data: bytes) -> bool:
         data[:4] == b"\xff\x4f\xff\x51",
     ])
 
-
-_extraction_pipeline = ExtractionPipeline()
-_company_config = CompanyConfig()
-_xml_generator = TallyXmlGenerator(_company_config)
-_ledger_engine = LedgerMappingEngine(_company_config)
-
-# Async extraction queue for multi-user concurrency
-MAX_CONCURRENT_EXTRACTIONS = 3
-extraction_queue = asyncio.Queue()
-processing_tasks: dict[str, tuple[str, float]] = {}  # inv_id -> (state, timestamp)
-
-_TASK_TTL_SECONDS = 3600  # 1 hour
 
 app = FastAPI(title="Invoice Extractor & XML Generator")
 
@@ -177,127 +181,18 @@ async def demo_login(body: dict):
     return {"token": "demo-token", "refresh_token": "demo-refresh", "email": body.get("email", "demo@local")}
 
 
-val.COMPANY_STATE_CODE = _company_config.state_code
+val.COMPANY_STATE_CODE = company_config.state_code
 
-_COMPANY_CONFIG_FIELDS = [
-    "company_name", "company_gstin", "company_state_code",
-    "purchase_ledger", "sales_ledger", "bank_ledger",
-    "tds_ledger", "round_off_ledger", "freight_ledger", "suspense_ledger",
-    "sundry_creditors_group", "sundry_debtors_group",
-    "purchase_accounts_group", "sales_accounts_group",
-    "bank_accounts_group", "current_liabilities_group",
-    "duties_taxes_group",
-    "correction_memory",
-    "masters_created",
-    "active_company",
-    "active_company_id",
-    "tally_password",
-]
-
-
-def _user_config_from_current(current_user: dict) -> dict:
-    """Extract company config fields from current_user (enriched from DB)."""
-    cfg = {}
-    encrypted_fields = {"tally_password"}
-    for field in _COMPANY_CONFIG_FIELDS:
-        val = current_user.get(field)
-        if val:
-            if field in encrypted_fields:
-                val = decrypt(val)
-            cfg[field] = val.strip() if isinstance(val, str) else val
-    return cfg
-
-
-def _make_xml_generator(user_cfg: dict) -> tuple[TallyXmlGenerator, CompanyConfig, str]:
-    """Create a per-request XML generator with user config overrides.
-    Returns (generator, config, active_company).
-    Automatically sets reuse_masters=True if masters already created for this company."""
-    active_company = ""
-    masters_created = False
-    if user_cfg:
-        masters_created = bool(user_cfg.pop("masters_created", False))
-        active_company = user_cfg.pop("active_company", "") or ""
-    cfg = _company_config
-    if user_cfg:
-        cfg = CompanyConfig(user_config=user_cfg)
-    gen = TallyXmlGenerator(cfg)
-    gen.masters_created = masters_created
-    return gen, cfg, active_company
-
-
-def _run_validation_pipeline(standard: StandardizedInvoice, xml_str: str) -> dict:
-    """Run the full validation pipeline and return a validation report dict.
-
-    Called automatically on every XML generation — no user action needed.
-    """
-    try:
-        pipeline = ValidationPipeline()
-        report = pipeline.run(standard, xml_str)
-        return report.to_dict()
-    except Exception as e:
-        logger.error("VALIDATION PIPELINE ERROR: %s", e)
-        return {
-            "scores": {"total": 0},
-            "passed": False,
-            "ready_for_tally": False,
-            "errors": [f"Pipeline error: {str(e)}"],
-            "warnings": [],
-            "error_count": 1,
-            "warning_count": 0,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Auth disabled: return default config from env vars (+ per-user in-memory overrides)
-# ---------------------------------------------------------------------------
-_config_overrides: dict[str, dict] = {}  # keyed by user_id — no cross-user bleed
-
-
-async def _default_user() -> dict:
-    """Return default user config from env vars + any in-memory overrides (no auth required)."""
-    base = {
-        "email": "default@local",
-        "user_id": "default",
-        "role": "admin",
-        "company_name": os.getenv("COMPANY_NAME", ""),
-        "company_gstin": os.getenv("COMPANY_GSTIN", ""),
-        "company_state_code": os.getenv("COMPANY_STATE_CODE", ""),
-        "purchase_ledger": os.getenv("PURCHASE_LEDGER", "Purchase"),
-        "sales_ledger": os.getenv("SALES_LEDGER", "Sales"),
-        "bank_ledger": os.getenv("BANK_LEDGER", "Bank"),
-        "tds_ledger": os.getenv("TDS_PAYABLE_LEDGER", "TDS Payable"),
-        "round_off_ledger": os.getenv("ROUND_OFF_LEDGER", "Round Off"),
-        "freight_ledger": os.getenv("FREIGHT_LEDGER", "Freight Expenses"),
-        "suspense_ledger": os.getenv("SUSPENSE_LEDGER", "Suspense"),
-        "sundry_creditors_group": os.getenv("SUNDRY_CREDITORS_GROUP", "Sundry Creditors"),
-        "sundry_debtors_group": os.getenv("SUNDRY_DEBTORS_GROUP", "Sundry Debtors"),
-        "purchase_accounts_group": os.getenv("PURCHASE_ACCOUNTS_GROUP", "Purchase Accounts"),
-        "sales_accounts_group": os.getenv("SALES_ACCOUNTS_GROUP", "Sales Accounts"),
-        "bank_accounts_group": os.getenv("BANK_ACCOUNTS_GROUP", "Bank Accounts"),
-        "current_liabilities_group": os.getenv("CURRENT_LIABILITIES_GROUP", "Current Liabilities"),
-        "duties_taxes_group": os.getenv("DUTIES_TAXES_GROUP", "Duties & Taxes"),
-        "correction_memory": {},
-        "tally_password": os.getenv("TALLY_PASSWORD", ""),
-    }
-    user_id = "default"
-    base.update({k: v for k, v in _config_overrides.get(user_id, {}).items() if v})
-    # Load active company from MongoDB if available
-    if db.organizations is not None:
-        try:
-            org = await db.organizations.find_one({"org_id": user_id})
-            if org:
-                if org.get("active_company"):
-                    base["active_company"] = org["active_company"]
-                if org.get("active_company_id"):
-                    base["active_company_id"] = org["active_company_id"]
-        except Exception:
-            pass
-    return base
+# Re-exports for route files that import these names
+_user_config_from_current = user_config_from_current
+_make_xml_generator = make_xml_generator
+_run_validation_pipeline = run_validation_pipeline
+_config_overrides = config_overrides
 
 
 async def get_authenticated_user() -> dict:
     """Demo mode: return default user without auth."""
-    return await _default_user()
+    return await default_user()
 
 
 class LineItemModel(BaseModel):

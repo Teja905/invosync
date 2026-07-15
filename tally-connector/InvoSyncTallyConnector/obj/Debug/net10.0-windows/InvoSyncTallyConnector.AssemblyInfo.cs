@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("InvoSyncTallyConnector")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ad3fbd0740baefb1e1c84806804b754c17702e15")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ab95fd1820bf59b100369f5e028f81c9b2457775")]
 [assembly: System.Reflection.AssemblyProductAttribute("InvoSyncTallyConnector")]
 [assembly: System.Reflection.AssemblyTitleAttribute("InvoSyncTallyConnector")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
