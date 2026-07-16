@@ -4,7 +4,7 @@ using InvoSync.TallyConnector.Forms;
 using InvoSync.TallyConnector.Services;
 
 // === PRODUCTION SHIELD: never silently crash ===
-var crashLog = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "connector-crash.log");
+var crashLog = AppPaths.CrashLogFile;
 void WriteCrash(string label, Exception ex)
 {
     try
@@ -63,6 +63,7 @@ try
     builder.Services.AddSingleton<RecentPushStore>();
     builder.Services.AddSingleton<UnlimitedBatchPusher>();
     builder.Services.AddTransient<SetupWizard>();
+    builder.Services.AddSingleton<XmlPayloadBuilder>();
     builder.Services.AddHttpClient("InvoSync", c =>
     {
         var cfg = builder.Configuration.GetSection("InvoSync");
@@ -77,7 +78,24 @@ try
         c.BaseAddress = new Uri($"http://{host}:{port}");
         c.Timeout = TimeSpan.FromSeconds(cfg.GetValue<int>("TimeoutSeconds", 60));
     });
-    builder.Services.AddSingleton<MainForm>();
+    builder.Services.AddSingleton<MainForm>(sp =>
+    {
+        return new MainForm(
+            sp.GetRequiredService<IHttpClientFactory>(),
+            sp.GetRequiredService<TallyPusher>(),
+            sp.GetRequiredService<QueueManager>(),
+            sp.GetRequiredService<TallyCompanySyncer>(),
+            sp.GetRequiredService<AutoUpdater>(),
+            sp.GetRequiredService<AutoRecoveryService>(),
+            sp.GetRequiredService<SyncWatchdog>(),
+            sp.GetRequiredService<RecentPushStore>(),
+            sp.GetRequiredService<ConnectorLogger>(),
+            sp.GetRequiredService<DiagnosticReporter>(),
+            sp.GetRequiredService<SessionManager>(),
+            sp.GetRequiredService<CompanyGuard>(),
+            sp.GetRequiredService<OfflineQueue>(),
+            sp.GetRequiredService<ILogger<MainForm>>());
+    });
     builder.Services.AddHostedService<PollingService>();
 
     _host = builder.Build();

@@ -1,5 +1,0 @@
-C:\Users\Admin\Desktop\Project-Pauldirac\tally-connector\InvoSyncTallyConnector\obj\Release\net8.0\win-x64\InvoSyncTallyConnector.csproj.AssemblyReference.cache
-C:\Users\Admin\Desktop\Project-Pauldirac\tally-connector\InvoSyncTallyConnector\obj\Release\net8.0\win-x64\InvoSyncTallyConnector.GeneratedMSBuildEditorConfig.editorconfig
-C:\Users\Admin\Desktop\Project-Pauldirac\tally-connector\InvoSyncTallyConnector\obj\Release\net8.0\win-x64\InvoSyncTallyConnector.AssemblyInfoInputs.cache
-C:\Users\Admin\Desktop\Project-Pauldirac\tally-connector\InvoSyncTallyConnector\obj\Release\net8.0\win-x64\InvoSyncTallyConnector.AssemblyInfo.cs
-C:\Users\Admin\Desktop\Project-Pauldirac\tally-connector\InvoSyncTallyConnector\obj\Release\net8.0\win-x64\InvoSyncTallyConnector.csproj.CoreCompileInputs.cache

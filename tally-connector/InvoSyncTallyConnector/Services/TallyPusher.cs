@@ -12,14 +12,28 @@ public partial class TallyPusher
     private readonly SemaphoreSlim _pushGate = new(1, 1);
     private Task? _activePush;
     private static readonly Regex _xmlDecl = XmlDeclRegex();
+    private static readonly string _connectorVersion;
+    private static readonly Regex _headerVersionTag = HeaderVersionTagRegex();
 
     [GeneratedRegex(@"^<\?xml\s+.*?\?>", RegexOptions.Compiled)]
     private static partial Regex XmlDeclRegex();
+
+    [GeneratedRegex(@"(<VERSION>\d+</VERSION>)", RegexOptions.Compiled)]
+    private static partial Regex HeaderVersionTagRegex();
 
     public TallyPusher(IHttpClientFactory httpFactory, ILogger<TallyPusher> log)
     {
         _httpFactory = httpFactory;
         _log = log;
+    }
+
+    static TallyPusher()
+    {
+        var asm = System.Reflection.Assembly.GetExecutingAssembly();
+        var ver = asm.GetName().Version;
+        _connectorVersion = ver != null
+            ? $"{ver.Major}.{ver.Minor}.{ver.Build}"
+            : "1.0.0";
     }
 
     /// <summary>Waits for the current push (if any) to complete, up to the given timeout.</summary>
@@ -53,6 +67,7 @@ public partial class TallyPusher
     private async Task<TallyImportResult> InternalPushAsync(string xml, CancellationToken ct, int maxRetries, string? tallyPassword)
     {
         var cleanXml = _xmlDecl.Replace(xml, "").Trim();
+        cleanXml = InjectVersionTag(cleanXml);
         if (!string.IsNullOrEmpty(tallyPassword))
             cleanXml = InjectPassword(cleanXml, tallyPassword);
         var http = _httpFactory.CreateClient("Tally");
@@ -135,6 +150,20 @@ public partial class TallyPusher
 
     private static string EscapeXml(string s) =>
         s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;").Replace("'", "&apos;");
+
+    /// <summary>
+    /// Injects &lt;CONNECTORVERSION&gt;xxx&lt;/CONNECTORVERSION&gt; after the &lt;VERSION&gt; tag.
+    /// </summary>
+    private static string InjectVersionTag(string xml)
+    {
+        var match = _headerVersionTag.Match(xml);
+        if (match.Success)
+        {
+            var insertAt = match.Index + match.Length;
+            return xml[..insertAt] + $"<CONNECTORVERSION>{_connectorVersion}</CONNECTORVERSION>" + xml[insertAt..];
+        }
+        return xml;
+    }
 
     /// <summary>
     /// Injects &lt;PASSWORD&gt;xxx&lt;/PASSWORD&gt; into the &lt;HEADER&gt; of a Tally XML envelope.

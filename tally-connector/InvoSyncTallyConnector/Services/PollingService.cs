@@ -25,12 +25,17 @@ public class PollingService : BackgroundService
     private readonly DryRunValidator _dryRunValidator;
     private readonly ImportReporter _importReporter;
     private readonly IdempotencyChecker _idempotencyChecker;
+    private readonly DiagnosticReporter _diagnosticReporter;
     private readonly ILogger<PollingService> _log;
     private readonly int _intervalSec;
     private int _tick;
     private string _tallyPassword = "";
     private string _activeCompany = "";
     private CancellationTokenSource? _watchdogCts;
+    private int _consecutiveFailures;
+    private readonly object _failLock = new();
+    private string? _currentTraceId;
+    private readonly CircuitBreaker _tallyCb;
 
     public PollingService(IHttpClientFactory httpFactory, TallyPusher pusher, QueueManager queue,
         OfflineQueue offlineQueue, NetworkMonitor networkMonitor,
@@ -40,6 +45,7 @@ public class PollingService : BackgroundService
         TallyRegisterPuller registerPuller,
         TallyMasterReader masterReader, DryRunValidator dryRunValidator,
         ImportReporter importReporter, IdempotencyChecker idempotencyChecker,
+        DiagnosticReporter diagnosticReporter,
         IConfiguration config, ILogger<PollingService> log)
     {
         _httpFactory = httpFactory;
@@ -57,8 +63,10 @@ public class PollingService : BackgroundService
         _dryRunValidator = dryRunValidator;
         _importReporter = importReporter;
         _idempotencyChecker = idempotencyChecker;
+        _diagnosticReporter = diagnosticReporter;
         _log = log;
         _intervalSec = config.GetValue<int>("InvoSync:PollIntervalSeconds", 30);
+        _tallyCb = new CircuitBreaker("Tally", log, threshold: 3, cooldownMs: 30_000);
     }
 
     /// <summary>Fetches Tally password and active company from backend.</summary>
@@ -106,15 +114,15 @@ public class PollingService : BackgroundService
             if (available)
             {
                 _log.LogInformation("Network restored — flushing offline queue");
-                _offlineQueue.ProcessPending(async item =>
+                await _offlineQueue.ProcessPendingAsync(async item =>
                 {
                     var result = await _pusher.PushAsync(item.XmlContent, ct, maxRetries: 2, tallyPassword: _tallyPassword);
                     if (result.Success)
                     {
                         _connectorLogger.TallyPush(item.InvoiceId, true);
-                        var client = _httpFactory.CreateClient("InvoSync");
-                        if (int.TryParse(item.InvoiceId, out var id))
-                            await ConfirmSuccessAsync(client, id, ct);
+                var client = _httpFactory.CreateClient("InvoSync");
+                if (int.TryParse(item.InvoiceId, out var id))
+                    await ConfirmSuccessAsync(client, id, null, ct);
                     }
                     else
                     {
@@ -142,7 +150,9 @@ public class PollingService : BackgroundService
                     await _companySyncer.ReportConnectorAliveAsync(reachable, ct);
                 }
                 if (_tick == 2 || _tick % 20 == 0)
-                    await _ledgerSyncer.SyncLedgerListAsync(ct);
+                {
+                    await _tallyCb.ExecuteAsync(() => _ledgerSyncer.SyncLedgerListAsync(ct));
+                }
 
                 // Refetch config periodically (every 60 ticks ~30 min)
                 if (_tick % 60 == 0)
@@ -152,7 +162,7 @@ public class PollingService : BackgroundService
                 if (_tick % 80 == 0 && !string.IsNullOrEmpty(_activeCompany))
                 {
                     _log.LogInformation("Syncing Tally masters for company: {Company}", _activeCompany);
-                    await SyncTallyMastersAsync(_activeCompany, ct);
+                    await _tallyCb.ExecuteAsync(() => SyncTallyMastersAsync(_activeCompany, ct));
                 }
 
                 // Pull vouchers from Tally (every 40 ticks ~20 min)
@@ -264,7 +274,7 @@ public class PollingService : BackgroundService
     {
         try
         {
-            var ledgers = await _masterReader.GetLedgersAsync(companyName, ct);
+            var ledgers = await _masterReader.GetLedgersWithDetailsAsync(companyName, ct);
             var stockItems = await _masterReader.GetStockItemsAsync(companyName, ct);
             var voucherTypes = await _masterReader.GetVoucherTypesAsync(companyName, ct);
             var groups = await _masterReader.GetGroupsAsync(companyName, ct);
@@ -276,7 +286,7 @@ public class PollingService : BackgroundService
 
             if (ledgers.Count > 0)
             {
-                var ledgerPayload = new { ledgers };
+                var ledgerPayload = new { ledgers = ledgers.Select(l => new { name = l.Name, parent = l.Parent, gst_type = l.GstType }) };
                 using var ledgerContent = new StringContent(JsonSerializer.Serialize(ledgerPayload), Encoding.UTF8);
                 ledgerContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
                 await client.PostAsync("/api/v3/tally/masters/ledgers", ledgerContent, masterCts.Token);
@@ -363,7 +373,7 @@ public class PollingService : BackgroundService
                             Success = false,
                             Error = "Duplicate: already imported",
                         });
-                        await ConfirmSuccessAsync(client, job.DisplayId, ct);
+                        await ConfirmSuccessAsync(client, job.DisplayId, null, ct);
                         continue;
                     }
                 }
@@ -390,6 +400,8 @@ public class PollingService : BackgroundService
                 continue;
             }
 
+            var traceId = Guid.NewGuid().ToString("N")[..12];
+            _currentTraceId = traceId;
             var startTime = DateTime.UtcNow;
             var result = await _pusher.PushAsync(job.XmlContent, ct, maxRetries: 3, tallyPassword: _tallyPassword);
             var durationMs = (int)(DateTime.UtcNow - startTime).TotalMilliseconds;
@@ -397,15 +409,21 @@ public class PollingService : BackgroundService
 
             if (result.Success)
             {
-                _log.LogInformation("Tally accepted invoice #{Id}", job.DisplayId);
+                _log.LogInformation("Tally accepted invoice #{Id} [trace={Trace}]", job.DisplayId, traceId);
                 _connectorLogger.TallyPush(job.DisplayId.ToString(), true);
                 _recentPushes.Add(new RecentPushEntry
                 {
                     Timestamp = DateTime.Now,
                     DisplayId = job.DisplayId,
                     InvoiceNumber = job.InvoiceNumber,
-                    Success = true
+                    Success = true,
+                    ConnectorVersion = GetConnectorVersion(),
+                    TraceId = traceId,
+                    DurationMs = durationMs,
                 });
+
+                // Reset consecutive failure counter
+                lock (_failLock) { _consecutiveFailures = 0; }
 
                 // P0 — Import report
                 var mastersCreated = dryRun.MastersToCreate ?? new List<string>();
@@ -414,11 +432,11 @@ public class PollingService : BackgroundService
                     job.DisplayId, true, mastersCreated, voucherId,
                     result.RawResponse ?? "", dryRun.Warnings, "", durationMs, ct);
 
-                await ConfirmSuccessAsync(client, job.DisplayId, ct);
+                await ConfirmSuccessAsync(client, job.DisplayId, traceId, ct);
             }
             else
             {
-                _log.LogWarning("Tally rejected invoice #{Id}: {Error}", job.DisplayId, result.ErrorLine);
+                _log.LogWarning("Tally rejected invoice #{Id} [trace={Trace}]: {Error}", job.DisplayId, traceId, result.ErrorLine);
                 _connectorLogger.TallyPush(job.DisplayId.ToString(), false, result.ErrorLine);
                 _recentPushes.Add(new RecentPushEntry
                 {
@@ -426,13 +444,33 @@ public class PollingService : BackgroundService
                     DisplayId = job.DisplayId,
                     InvoiceNumber = job.InvoiceNumber,
                     Success = false,
-                    Error = result.ErrorLine
+                    Error = result.ErrorLine,
+                    ConnectorVersion = GetConnectorVersion(),
+                    TraceId = traceId,
+                    DurationMs = durationMs,
                 });
 
                 // P0 — Import report for failures
                 _ = _importReporter.ReportAsync(
                     job.DisplayId, false, new List<string>(), "",
                     result.RawResponse ?? "", dryRun.Warnings, result.ErrorLine ?? "Unknown", durationMs, ct);
+
+                // Track consecutive failures → auto-diagnostics
+                bool triggerDiag = false;
+                lock (_failLock)
+                {
+                    _consecutiveFailures++;
+                    if (_consecutiveFailures >= 5)
+                    {
+                        triggerDiag = true;
+                        _consecutiveFailures = 0;
+                    }
+                }
+                if (triggerDiag)
+                {
+                    _log.LogWarning("5 consecutive failures — triggering auto-diagnostics [trace={Trace}]", traceId);
+                    _ = _diagnosticReporter.GenerateReportAsync();
+                }
 
                 job.RetryCount++;
                 if (job.RetryCount >= job.MaxRetries)
@@ -443,7 +481,7 @@ public class PollingService : BackgroundService
                 }
                 else
                 {
-                    _log.LogWarning("Requeueing invoice #{Id} (retry {N}/{M})", job.DisplayId, job.RetryCount, job.MaxRetries);
+                    _log.LogWarning("Requeueing invoice #{Id} (retry {N}/{M}) [trace={Trace}]", job.DisplayId, job.RetryCount, job.MaxRetries, traceId);
                     _queue.Enqueue(job);
                 }
             }
@@ -465,15 +503,25 @@ public class PollingService : BackgroundService
         public string InvoiceDate { get; set; } = "";
     }
 
-    private async Task ConfirmSuccessAsync(HttpClient client, int displayId, CancellationToken ct)
+    private async Task ConfirmSuccessAsync(HttpClient client, int displayId, string? traceId, CancellationToken ct)
     {
         try
         {
-            var confirm = await client.PostAsync($"/api/v3/sync/confirm/{displayId}", null, ct);
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"/api/v3/sync/confirm/{displayId}");
+            req.Headers.TryAddWithoutValidation("X-Trace-Id", traceId ?? "");
+            req.Headers.TryAddWithoutValidation("X-Connector-Version", GetConnectorVersion());
+            var confirm = await client.SendAsync(req, ct);
             if (!confirm.IsSuccessStatusCode)
-                _log.LogWarning("Confirm #{Id} returned {Status}", displayId, confirm.StatusCode);
+                _log.LogWarning("Confirm #{Id} returned {Status} [trace={Trace}]", displayId, confirm.StatusCode, traceId);
         }
-        catch (Exception ex) { _log.LogWarning("Confirm #{Id} failed: {Message}", displayId, ex.Message); }
+        catch (Exception ex) { _log.LogWarning("Confirm #{Id} failed: {Message} [trace={Trace}]", displayId, ex.Message, traceId); }
+    }
+
+    private static string GetConnectorVersion()
+    {
+        var asm = System.Reflection.Assembly.GetExecutingAssembly();
+        var ver = asm.GetName().Version;
+        return ver != null ? $"{ver.Major}.{ver.Minor}.{ver.Build}" : "1.0.0";
     }
 
     private async Task ReportErrorAsync(HttpClient client, int displayId, string error, CancellationToken ct)

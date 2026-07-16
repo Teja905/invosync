@@ -21,7 +21,6 @@ JWT_ALGO = "HS256"
 JWT_EXPIRY_HOURS = 72
 
 if not JWT_SECRET:
-    import secrets
     JWT_SECRET = secrets.token_urlsafe(64)
     logger.warning("JWT_SECRET not set — generated ephemeral secret. Set JWT_SECRET env var for production.")
 elif JWT_SECRET in ("dev-secret-change-in-production", "change-this-to-a-long-random-secret-in-production", "secret", "changeme"):
@@ -158,7 +157,7 @@ async def signup(req: SignupRequest):
     pwd_hash = _hash_password(req.password)
     user = await db.create_user(email, pwd_hash, req.name)
     token = create_jwt(email, str(user["_id"]))
-    audit_logger.log_auth("signup", email, True, details=f"name={req.name}")
+    await audit_logger.log_auth("signup", email, True, details=f"name={req.name}")
 
     user_obj = {
         "email": email,
@@ -184,12 +183,12 @@ async def login(req: LoginRequest):
         raise HTTPException(401, "Invalid email or password")
 
     if not _verify_password(req.password, user.get("password_hash", "")):
-        audit_logger.log_auth("login", email, False, details="invalid_password")
+        await audit_logger.log_auth("login", email, False, details="invalid_password")
         raise HTTPException(401, "Invalid email or password")
 
     await db.update_user_login(email)
     token = create_jwt(email, str(user["_id"]))
-    audit_logger.log_auth("login", email, True, details=f"user_id={user['_id']}")
+    await audit_logger.log_auth("login", email, True, details=f"user_id={user['_id']}")
 
     user_obj = {
         "email": email,

@@ -3,6 +3,8 @@ using System.Text.Json;
 
 namespace InvoSync.TallyConnector.Services;
 
+using static AppPaths;
+
 public class RecentPushEntry
 {
     public DateTime Timestamp { get; set; }
@@ -12,6 +14,9 @@ public class RecentPushEntry
     public decimal Amount { get; set; }
     public bool Success { get; set; }
     public string? Error { get; set; }
+    public string ConnectorVersion { get; set; } = "";
+    public string? TraceId { get; set; }
+    public long DurationMs { get; set; }
 }
 
 public class DailyCounters
@@ -32,9 +37,7 @@ public class RecentPushStore
     public RecentPushStore(ILogger<RecentPushStore> log)
     {
         _log = log;
-        _countersFile = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "InvoSync", "daily_counters.json");
+        _countersFile = DailyCountersFile;
         _today = new DailyCounters { Date = DateTime.Today };
         LoadCounters();
     }

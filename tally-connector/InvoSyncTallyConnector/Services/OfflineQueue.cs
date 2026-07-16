@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
 
 namespace InvoSync.TallyConnector.Services;
 
+using static AppPaths;
+
 public class PendingInvoice
 {
     public string Id { get; set; } = "";
@@ -21,7 +23,7 @@ public class OfflineQueue
     public OfflineQueue(ILogger<OfflineQueue> log)
     {
         _log = log;
-        _dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "offline_queue.db");
+        _dbPath = AppPaths.OfflineQueueDb;
         InitializeDatabase();
     }
 
@@ -241,14 +243,15 @@ public class OfflineQueue
         }
     }
 
-    public void ProcessPending(Func<PendingInvoice, Task<bool>> processor)
+    /// <summary>Processes pending invoices asynchronously, one at a time.</summary>
+    public async Task ProcessPendingAsync(Func<PendingInvoice, Task<bool>> processor)
     {
         var pending = GetPending(10);
         foreach (var item in pending)
         {
             try
             {
-                var ok = processor(item).GetAwaiter().GetResult();
+                var ok = await processor(item).ConfigureAwait(false);
                 if (ok) MarkSuccess(item.Id);
                 else MarkFailed(item.Id);
             }
@@ -257,5 +260,12 @@ public class OfflineQueue
                 MarkFailed(item.Id);
             }
         }
+    }
+
+    /// <summary>Synchronous wrapper kept for backward compatibility. Prefer <c>ProcessPendingAsync</c>.</summary>
+    [Obsolete("Use ProcessPendingAsync to avoid thread-pool deadlocks")]
+    public void ProcessPending(Func<PendingInvoice, Task<bool>> processor)
+    {
+        Task.Run(() => ProcessPendingAsync(processor)).GetAwaiter().GetResult();
     }
 }

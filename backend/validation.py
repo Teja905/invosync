@@ -348,8 +348,7 @@ def validate_xml(xml_str: str, data: dict) -> list:
         issues.append("Root <ENVELOPE> element missing")
 
     # Check balanced debits/credits
-    import re as _re
-    amounts = _re.findall(r"<AMOUNT>(-?\d+\.?\d*)</AMOUNT>", xml_str)
+    amounts = re.findall(r"<AMOUNT>(-?\d+\.?\d*)</AMOUNT>", xml_str)
     debit_total = 0.0
     credit_total = 0.0
     for amt_str in amounts:

@@ -1170,6 +1170,14 @@ select.premium-input {
   transform: translateX(-50%) translateY(0);
 }
 
+/* --- Premium Table Row --- */
+.premium-table-row {
+  transition: all 0.15s ease;
+}
+.premium-table-row:hover {
+  background: rgba(124, 58, 237, 0.03);
+}
+
 /* --- Premium Divider --- */
 .premium-divider {
   height: 1px;

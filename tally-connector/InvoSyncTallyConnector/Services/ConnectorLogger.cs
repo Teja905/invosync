@@ -1,5 +1,7 @@
 namespace InvoSync.TallyConnector.Services;
 
+using static AppPaths;
+
 public class ConnectorLogger
 {
     private readonly string _logDir;
@@ -11,9 +13,8 @@ public class ConnectorLogger
     public ConnectorLogger(ILogger<ConnectorLogger> log)
     {
         _log = log;
-        _logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs");
-        Directory.CreateDirectory(_logDir);
-        TodayLogPath = Path.Combine(_logDir, $"connector_{DateTime.Now:yyyy-MM-dd}.log");
+        _logDir = LogDir;
+        TodayLogPath = TodayLogPath();
         CleanOldLogs();
     }
 
@@ -53,6 +54,7 @@ public class ConnectorLogger
     {
         try
         {
+            ArgumentNullException.ThrowIfNull(_logDir);
             var cutoff = DateTime.Now.AddDays(-30);
             foreach (var f in Directory.GetFiles(_logDir, "connector_*.log"))
                 if (File.GetCreationTime(f) < cutoff) File.Delete(f);

@@ -16,6 +16,7 @@ COMPANY_CONFIG_FIELDS = [
     "purchase_accounts_group", "sales_accounts_group",
     "bank_accounts_group", "current_liabilities_group",
     "duties_taxes_group",
+    "debtors_ledger", "creditors_ledger", "input_gst_ledger", "output_gst_ledger",
     "correction_memory",
     "masters_created",
     "active_company",
@@ -41,7 +42,7 @@ def user_config_from_current(current_user: dict) -> dict:
     return cfg
 
 
-def make_xml_generator(user_cfg: dict, default_config: CompanyConfig) -> tuple[TallyXmlGenerator, CompanyConfig, str]:
+def make_xml_generator(user_cfg: dict, default_config: CompanyConfig | None = None) -> tuple[TallyXmlGenerator, CompanyConfig, str]:
     """Create a per-request XML generator with user config overrides.
     Returns (generator, config, active_company).
     Automatically sets reuse_masters=True if masters already created for this company."""
@@ -50,7 +51,7 @@ def make_xml_generator(user_cfg: dict, default_config: CompanyConfig) -> tuple[T
     if user_cfg:
         masters_created = bool(user_cfg.pop("masters_created", False))
         active_company = user_cfg.pop("active_company", "") or ""
-    cfg = default_config
+    cfg = default_config or CompanyConfig()
     if user_cfg:
         cfg = CompanyConfig(user_config=user_cfg)
     gen = TallyXmlGenerator(cfg)
@@ -105,6 +106,10 @@ async def default_user() -> dict:
         "bank_accounts_group": os.getenv("BANK_ACCOUNTS_GROUP", "Bank Accounts"),
         "current_liabilities_group": os.getenv("CURRENT_LIABILITIES_GROUP", "Current Liabilities"),
         "duties_taxes_group": os.getenv("DUTIES_TAXES_GROUP", "Duties & Taxes"),
+        "debtors_ledger": os.getenv("DEBTORS_LEDGER", "Sundry Debtors"),
+        "creditors_ledger": os.getenv("CREDITORS_LEDGER", "Sundry Creditors"),
+        "input_gst_ledger": os.getenv("INPUT_GST_LEDGER", "Input CGST @ 9%"),
+        "output_gst_ledger": os.getenv("OUTPUT_GST_LEDGER", "Output CGST @ 9%"),
         "correction_memory": {},
         "tally_password": os.getenv("TALLY_PASSWORD", ""),
     }

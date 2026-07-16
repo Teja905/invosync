@@ -15,6 +15,7 @@ from PIL import Image
 
 from core.logging import get_logger
 from core.debug import time_it
+from core.pii import redact_pii
 from schemas import StandardizedInvoice, VoucherType
 from ocr_postproc import post_process_extracted, validate_invoice_math
 from gst_engine import determine_gst_type
@@ -259,7 +260,7 @@ def _normalize_to_standard(data: dict, provider: str, model: str, company_gstin:
         elif doc_lower == "tax_invoice":
             pass
     logger.info("VOUCHER CLASSIFICATION: document_type=%r is_service=%s vendor_gstin=%r company_gstin=%r > voucher_type=%s",
-                doc_type, is_service, vendor_gstin, company_gstin, voucher_type.value)
+                doc_type, is_service, redact_pii(vendor_gstin), redact_pii(company_gstin), voucher_type.value)
 
     return StandardizedInvoice(
         invoice_number=data.get("invoice_number") or "",

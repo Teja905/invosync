@@ -1,6 +1,9 @@
+using System.Diagnostics;
 using System.Text;
 
 namespace InvoSync.TallyConnector.Services;
+
+using static AppPaths;
 
 public class DiagnosticReporter
 {
@@ -9,10 +12,27 @@ public class DiagnosticReporter
     private readonly QueueManager _queue;
     private readonly OfflineQueue _offlineQueue;
     private readonly ConnectorLogger _logger;
+    private readonly RecentPushStore _recentPushes;
     private readonly ILogger<DiagnosticReporter> _log;
+    private static readonly PerformanceCounter? _cpuCounter;
+    private static readonly DateTime _processStart = Process.GetCurrentProcess().StartTime;
+
+    static DiagnosticReporter()
+    {
+        try
+        {
+            _cpuCounter = new PerformanceCounter("Process", "% Processor Time", Process.GetCurrentProcess().ProcessName, true);
+            _cpuCounter.NextValue(); // warm-up
+        }
+        catch
+        {
+            _cpuCounter = null;
+        }
+    }
 
     public DiagnosticReporter(IHttpClientFactory httpFactory, CompanyGuard companyGuard,
         QueueManager queue, OfflineQueue offlineQueue, ConnectorLogger logger,
+        RecentPushStore recentPushes,
         ILogger<DiagnosticReporter> log)
     {
         _httpFactory = httpFactory;
@@ -20,6 +40,7 @@ public class DiagnosticReporter
         _queue = queue;
         _offlineQueue = offlineQueue;
         _logger = logger;
+        _recentPushes = recentPushes;
         _log = log;
     }
 
@@ -36,6 +57,47 @@ public class DiagnosticReporter
         report.AppendLine($".NET: {Environment.Version}");
         report.AppendLine($"Machine: {Environment.MachineName}");
         report.AppendLine($"Process: {Environment.ProcessPath}");
+        report.AppendLine($"Process uptime: {(DateTime.Now - _processStart).ToString(@"d\.hh\:mm\:ss")}");
+
+        // CPU & RAM
+        try
+        {
+            var proc = Process.GetCurrentProcess();
+            if (_cpuCounter != null)
+            {
+                var cpuPct = _cpuCounter.NextValue();
+                report.AppendLine($"CPU (process): {cpuPct:F1}%");
+            }
+            var ws = proc.WorkingSet64;
+            var priv = proc.PrivateMemorySize64;
+            report.AppendLine($"RAM working set: {ws / 1024 / 1024} MB");
+            report.AppendLine($"RAM private: {priv / 1024 / 1024} MB");
+            report.AppendLine($"Threads: {proc.Threads.Count}");
+            report.AppendLine($"Handles: {proc.HandleCount}");
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine($"Resource info unavailable: {ex.Message}");
+        }
+
+        // Disk
+        try
+        {
+            var drive = new DriveInfo(Path.GetPathRoot(BaseDir) ?? "C:\\");
+            report.AppendLine($"Disk ({drive.Name}): {drive.TotalFreeSpace / 1024 / 1024 / 1024} GB free / {drive.TotalSize / 1024 / 1024 / 1024} GB total");
+        }
+        catch { }
+
+        // App data directory sizes
+        try
+        {
+            var dataSize = Directory.GetFiles(DataDir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
+            var logSize = Directory.GetFiles(LogDir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
+            report.AppendLine($"AppData/data: {dataSize / 1024} KB");
+            report.AppendLine($"AppData/logs: {logSize / 1024} KB");
+        }
+        catch { }
+
         report.AppendLine();
 
         report.AppendLine("--- Tally Status ---");
@@ -57,6 +119,30 @@ public class DiagnosticReporter
         report.AppendLine($"In-memory dead letter: {_queue.DeadLetterCount}");
         report.AppendLine($"Offline DB pending: {_offlineQueue.GetPendingCount()}");
         report.AppendLine($"Offline DB dead letter: {_offlineQueue.GetDeadLetterCount()}");
+        report.AppendLine();
+
+        // Push latency from RecentPushStore
+        report.AppendLine("--- Push Performance ---");
+        try
+        {
+            var recent = _recentPushes.GetRecent(50);
+            var successes = recent.Where(r => r.Success).ToList();
+            var failures = recent.Where(r => !r.Success).ToList();
+            report.AppendLine($"Today pushed: {_recentPushes.TodayPushCount}");
+            report.AppendLine($"Today failed: {_recentPushes.TodayFailCount}");
+            if (successes.Count > 0)
+            {
+                var avgMs = successes.Average(r => r.DurationMs);
+                var maxMs = successes.Max(r => r.DurationMs);
+                var minMs = successes.Min(r => r.DurationMs);
+                report.AppendLine($"Last {successes.Count} pushes — avg: {avgMs:F0}ms, min: {minMs}ms, max: {maxMs}ms");
+            }
+            report.AppendLine($"Recent pushes with version info: {recent.Count(r => !string.IsNullOrEmpty(r.ConnectorVersion))}");
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine($"Push stats unavailable: {ex.Message}");
+        }
         report.AppendLine();
 
         report.AppendLine("--- Backend Ping ---");
@@ -84,8 +170,7 @@ public class DiagnosticReporter
             report.AppendLine("(no logs yet today)");
         }
 
-        var path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
-            $"diagnostic_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+        var path = DiagnosticReportPath();
         File.WriteAllText(path, report.ToString());
         _log.LogInformation("Diagnostic report saved to {Path}", path);
         return path;

@@ -1,0 +1,40 @@
+# Render blueprint — keeps InvoSync awake + defines infrastructure
+# Deploy from Render dashboard: "Blueprint" → connect repo
+# Or manually: create a Web Service + Cron Job from this file
+
+services:
+  # ---- Main API ----
+  - type: web
+    name: invosync-api
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: ENV_MODE
+        value: production
+      - key: PORT
+        value: 8000
+      - key: ALLOWED_ORIGINS
+        value: "https://invosync-wheat.vercel.app,https://invosync.vercel.app,https://invosync.in"
+      - key: APP_URL
+        fromService:
+          name: invosync-api
+          type: web
+          property: url
+      - key: MONGODB_URI
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+
+  # ---- Keep-alive cron job ----
+  # Pings /health every 10 min so Render free tier never sleeps.
+  - type: cron
+    name: invosync-keepalive
+    schedule: "*/10 * * * *"
+    dockerCommand: "curl -sf https://invosync-backend-yjfa.onrender.com/health > /dev/null 2>&1 || exit 0"
+    env: docker
+    dockerfilePath: ./backend/Dockerfile.curl

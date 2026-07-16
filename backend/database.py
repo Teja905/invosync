@@ -47,12 +47,20 @@ clients = None
 banking_rules = None
 organizations = None
 companies = None
+audit_logs = None
 
 
 async def connect():
-    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies
+    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies, audit_logs
     uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-    _client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=5000)
+    # Bounded connection pool so 1000+ concurrent users don't exhaust sockets.
+    _client = AsyncIOMotorClient(
+        uri,
+        serverSelectionTimeoutMS=5000,
+        maxPoolSize=int(os.getenv("MONGO_MAX_POOL", "50")),
+        minPoolSize=int(os.getenv("MONGO_MIN_POOL", "5")),
+        maxIdleTimeMS=30000,
+    )
     _db = _client.invoice_tally
     invoices = _db.invoices
     counters = _db.counters
@@ -61,6 +69,7 @@ async def connect():
     banking_rules = _db.banking_rules
     organizations = _db.organizations
     companies = _db.companies
+    audit_logs = _db.audit_logs
 
     # Seed counters
     for cname in ("invoice_id", "client_id", "company_id"):
@@ -86,6 +95,18 @@ async def _create_indexes():
         )
         await invoices.create_index(
             [("user_id", 1), ("client_id", 1), ("created_at", -1)], name="idx_user_client",
+        )
+        await invoices.create_index(
+            [("user_id", 1), ("status", 1), ("created_at", -1)], name="idx_user_status",
+        )
+        await audit_logs.create_index(
+            [("resource_type", 1), ("resource_id", 1), ("created_at", -1)], name="idx_audit_resource",
+        )
+        await audit_logs.create_index(
+            [("user_id", 1), ("created_at", -1)], name="idx_audit_user",
+        )
+        await audit_logs.create_index(
+            [("created_at", 1)], expireAfterSeconds=7776000, name="idx_audit_ttl",
         )
         await users.create_index("email", unique=True, name="idx_user_email")
         await clients.create_index(
@@ -520,3 +541,52 @@ async def get_company_analytics(company_id: int) -> dict:
         "monthly_trend": monthly_trend,
         "top_clients": top_clients_raw,
     }
+
+
+# ---------------------------------------------------------------------------
+# Audit Logs
+# ---------------------------------------------------------------------------
+
+async def insert_audit_log(entry: dict) -> object:
+    """Insert an audit log entry. Returns inserted_id."""
+    doc = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        **entry,
+    }
+    if audit_logs is not None:
+        result = await execute_db_write_with_retry(audit_logs.insert_one, doc)
+        return result.inserted_id
+    return None
+
+
+async def list_audit_logs(
+    resource_type: str = None,
+    resource_id: str = None,
+    user_id: str = None,
+    action: str = None,
+    limit: int = 100,
+) -> list:
+    """Query audit logs with optional filters, newest first."""
+    query = {}
+    if resource_type:
+        query["resource_type"] = resource_type
+    if resource_id is not None:
+        query["resource_id"] = str(resource_id)
+    if user_id:
+        query["user_id"] = user_id
+    if action:
+        query["action"] = action
+    if audit_logs is not None:
+        cursor = audit_logs.find(query).sort("created_at", -1).limit(limit)
+        return await cursor.to_list(length=limit)
+    return []
+
+
+async def get_last_audit_event(resource_type: str, resource_id: str, action: str = None) -> Optional[dict]:
+    """Return the most recent audit event for a given resource."""
+    query = {"resource_type": resource_type, "resource_id": str(resource_id)}
+    if action:
+        query["action"] = action
+    if audit_logs is not None:
+        return await audit_logs.find_one(query, sort=[("created_at", -1)])
+    return None
