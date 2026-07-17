@@ -1,17 +1,18 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { useAuth } from "./auth";
 import gsap from "gsap";
 import BACKEND from "./api/client";
 import ErrorBoundary from "./components/ErrorBoundary";
 import NavBar from "./components/NavBar";
 import OfflineBanner from "./components/OfflineBanner";
-import ExtractPage from "./pages/ExtractPage";
-import ClientsPage from "./pages/ClientsPage";
-import DashboardPage from "./pages/DashboardPage";
-import AdminPage from "./pages/AdminPage";
-import SettingsPage from "./pages/SettingsPage";
-import BankingPage from "./pages/BankingPage";
-import LearningPage from "./pages/LearningPage";
+
+const ExtractPage = lazy(() => import("./pages/ExtractPage"));
+const ClientsPage = lazy(() => import("./pages/ClientsPage"));
+const DashboardPage = lazy(() => import("./pages/DashboardPage"));
+const AdminPage = lazy(() => import("./pages/AdminPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const BankingPage = lazy(() => import("./pages/BankingPage"));
+const LearningPage = lazy(() => import("./pages/LearningPage"));
 
 export default function App() {
   const { user, getAuthHeaders } = useAuth();
@@ -84,6 +85,7 @@ export default function App() {
       <OfflineBanner />
       <NavBar active={page} onChange={(p) => { setPage(p); if (p === "dashboard") setRefreshKey((k) => k + 1); if (p === "clients") setRefreshKey((k) => k + 1); }} tallyStatus={tallyStatus} />
       <div className="premium-page" ref={pageRef}>
+        <Suspense fallback={<div className="premium-card animate-pulse p-8 text-center opacity-60">Loading…</div>}>
         {page === "extract" ? (
           <ErrorBoundary key="extract"><ExtractPage form={form} setForm={setForm} currentId={currentId} setCurrentId={setCurrentId} selectedClient={selectedClient} setSelectedClient={setSelectedClient} ledgers={ledgers} setLedgers={setLedgers} reviewConfirmed={reviewConfirmed} setReviewConfirmed={setReviewConfirmed} reviewErrors={reviewErrors} setReviewErrors={setReviewErrors} /></ErrorBoundary>
         ) : page === "clients" ? (
@@ -97,6 +99,7 @@ export default function App() {
         ) : (
           <ErrorBoundary key="dashboard"><DashboardPage refreshKey={refreshKey} setRefreshKey={setRefreshKey} onEditInvoice={handleEditInvoice} /></ErrorBoundary>
         )}
+        </Suspense>
       </div>
     </div>
     </ErrorBoundary>

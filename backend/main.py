@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
@@ -102,6 +103,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Invoice Extractor & XML Generator", lifespan=lifespan)
+
+# -- Compression (reduce API payload size 30-60%) --
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # -- Rate limiting --
 app.state.limiter = limiter
