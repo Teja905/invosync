@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { useAuth } from "../auth";
 import BACKEND from "../api/client";
 import { queuedFetch } from "../api/queue";
+import { useToast } from "../components/Toast";
+import ConfirmDialog from "../components/ConfirmDialog";
 import UploadPanel from "../components/UploadPanel";
 import ReviewPanel from "../components/ReviewPanel";
 import ValidationModal from "../components/ValidationModal";
@@ -28,7 +30,10 @@ function clearDraft() {
 
 export default function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, setSelectedClient, ledgers, setLedgers, reviewConfirmed, setReviewConfirmed, reviewErrors, setReviewErrors }) {
   const { user, getAuthHeaders } = useAuth();
+  const toast = useToast();
   const [extracting, setExtracting] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
+  const [showUndoConfirm, setShowUndoConfirm] = useState(false);
   const [validated, setValidated] = useState(false);
   const [errors, setErrors] = useState({});
   const [success, setSuccess] = useState(false);
@@ -167,6 +172,7 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
       item_ledgers: ledgers,
     };
     try {
+      setIsBusy(true);
       const res = await queuedFetch(`/api/v3/invoices/${currentId}/confirm-review`, {
         method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify(payload),
@@ -177,18 +183,21 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
         setValidated(true);
         setReviewErrors(null);
         clearDraft();
+        toast.success("Review confirmed — ready to download XML");
       } else {
         setReviewErrors(body.errors || [body.message || "Review confirmation failed"]);
       }
     } catch (e) {
       setReviewErrors([e.queued ? "Saved offline — will sync when reconnected." : "Review failed: " + e.message]);
+    } finally {
+      setIsBusy(false);
     }
   }
 
   async function undoReview() {
     if (!currentId) return;
-    if (!window.confirm("Undo review? Invoice will go back to draft status.")) return;
     try {
+      setIsBusy(true);
       const res = await queuedFetch(`/invoices/${currentId}/undo`, {
         method: "POST", headers: getAuthHeaders(),
       });
@@ -196,11 +205,15 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
       if (res.ok) {
         setReviewConfirmed(false);
         setValidated(false);
+        toast.success("Review undone — back to draft");
       } else {
-        alert(body.message || "Undo failed");
+        toast.error(body.message || "Undo failed");
       }
     } catch (e) {
-      alert("Undo error: " + e.message);
+      toast.error("Undo error: " + e.message);
+    } finally {
+      setIsBusy(false);
+      setShowUndoConfirm(false);
     }
   }
 
@@ -227,7 +240,7 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         if (body.error === "company_profile_required") {
-          alert("Set up your company profile first (Company Name, GSTIN, State) in Settings.");
+          toast.error("Set up your company profile first (Company Name, GSTIN, State) in Settings.");
           setQueue((q) => { const n = [...q]; n[idx] = { ...n[idx], status: "failed", error: "No company profile" }; return n; });
           return;
         }
@@ -321,7 +334,7 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
   }, [selectedClient, setForm, setCurrentId, companyGstin, companyName, getAuthHeaders]);
 
   const handleUpload = useCallback(async (files) => {
-    if (!selectedClient) { alert("Select a client first"); return; }
+    if (!selectedClient) { toast.warning("Select a client first"); return; }
     const fileList = Array.isArray(files) ? files : [files];
     setValidated(false); setErrors({}); setSuccess(false); setValidation(null); setDupWarning(null);
 
@@ -445,8 +458,19 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
           onReviewConfirm={doReviewConfirm}
           onDownloadXML={() => downloadXML()}
           onPreviewMasters={() => {}}
-          onUndo={undoReview}
+          onUndo={() => setShowUndoConfirm(true)}
           onReset={resetForm}
+          submitting={isBusy}
+        />
+      )}
+
+      {showUndoConfirm && (
+        <ConfirmDialog
+          title="Undo review?"
+          message="This invoice will go back to draft status. You can review it again anytime."
+          confirmLabel="Undo Review"
+          onConfirm={undoReview}
+          onCancel={() => setShowUndoConfirm(false)}
         />
       )}
 

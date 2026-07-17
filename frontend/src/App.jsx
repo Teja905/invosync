@@ -5,6 +5,7 @@ import BACKEND from "./api/client";
 import ErrorBoundary from "./components/ErrorBoundary";
 import NavBar from "./components/NavBar";
 import OfflineBanner from "./components/OfflineBanner";
+import { useToast } from "./components/Toast";
 
 const ExtractPage = lazy(() => import("./pages/ExtractPage"));
 const ClientsPage = lazy(() => import("./pages/ClientsPage"));
@@ -16,6 +17,7 @@ const LearningPage = lazy(() => import("./pages/LearningPage"));
 
 export default function App() {
   const { user, getAuthHeaders } = useAuth();
+  const toast = useToast();
   const [page, setPage] = useState("extract");
   const [refreshKey, setRefreshKey] = useState(0);
   const [currentId, setCurrentId] = useState(null);
@@ -65,7 +67,7 @@ export default function App() {
       if (d.client_id) setSelectedClient(String(d.client_id));
       setPage("extract");
     } catch (e) {
-      alert("Error loading invoice: " + e.message);
+      toast.error("Error loading invoice: " + e.message);
     }
   }
 

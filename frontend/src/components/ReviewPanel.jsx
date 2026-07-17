@@ -11,7 +11,7 @@ const VOUCHER_TYPES = [
 export default function ReviewPanel({
   form, setForm, ledgers, setLedgers, errors, reviewConfirmed, reviewErrors,
   currentId, imageUrl, tallyLedgers, validation, getAuthHeaders, companyGstin, companyName,
-  onReviewConfirm, onDownloadXML, onPreviewMasters, onReset, onUndo,
+  onReviewConfirm, onDownloadXML, onPreviewMasters, onReset, onUndo, submitting,
 }) {
   const [activeTab, setActiveTab] = useState("basic");
   const [showMastersPreview, setShowMastersPreview] = useState(false);
@@ -576,15 +576,15 @@ export default function ReviewPanel({
           </button>
 
           {!reviewConfirmed ? (
-            <button onClick={onReviewConfirm} className="premium-btn-primary flex-1 py-2.5 text-sm">
-              Review &amp; Confirm
+            <button onClick={onReviewConfirm} disabled={submitting} className="premium-btn-primary flex-1 py-2.5 text-sm disabled:opacity-60 flex items-center justify-center gap-2">
+              {submitting ? (<><span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />Confirming…</>) : "Review & Confirm"}
             </button>
           ) : (
             <>
               <button onClick={onDownloadXML} className="premium-btn-primary flex-1 py-2.5 text-sm">
                 Download XML
               </button>
-              <button onClick={onUndo} className="premium-btn-secondary text-xs px-3 py-2 border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10">
+              <button disabled={submitting} onClick={onUndo} className="premium-btn-secondary text-xs px-3 py-2 border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10 disabled:opacity-60">
                 Undo Review
               </button>
             </>

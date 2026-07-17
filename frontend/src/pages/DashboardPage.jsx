@@ -2,12 +2,15 @@ import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../auth";
 import BACKEND from "../api/client";
 import { queuedFetch } from "../api/queue";
+import { useToast } from "../components/Toast";
+import ConfirmDialog from "../components/ConfirmDialog";
 import WarningBanner from "../components/WarningBanner";
 import MissingMastersDialog from "../components/MissingMastersDialog";
 import ValidationModal from "../components/ValidationModal";
 
 export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice }) {
   const { getAuthHeaders } = useAuth();
+  const toast = useToast();
   const [invoices, setInvoices] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -29,6 +32,8 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
   const [bulkLedger, setBulkLedger] = useState("");
   const [missingMasters, setMissingMasters] = useState(null);
   const [pendingSyncInv, setPendingSyncInv] = useState(null);
+  const [syncingId, setSyncingId] = useState(null);
+  const [showBulkDelete, setShowBulkDelete] = useState(false);
 
   useEffect(() => {
     fetch(`${BACKEND}/clients`, { headers: getAuthHeaders() })
@@ -146,6 +151,7 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
   }
 
   async function queueSyncNow(inv) {
+    setSyncingId(inv.id);
     setActionMsg({ type: "info", text: "Queueing for Tally sync..." });
     try {
       const res = await queuedFetch(`/api/v3/invoices/${inv.id}/sync-now`, { method: "POST", headers: getAuthHeaders() });
@@ -155,9 +161,12 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
       }
       const result = await res.json();
       setActionMsg({ type: "success", text: result.message || "Queued! Connector will pick it up within 30s." });
+      toast.success("Queued for Tally sync");
       setRefreshKey((k) => k + 1);
     } catch (e) {
       setActionMsg({ type: e.queued ? "info" : "error", text: e.queued ? "Saved offline — will sync when reconnected." : `Sync trigger failed: ${e.message}` });
+    } finally {
+      setSyncingId(null);
     }
   }
 
@@ -168,6 +177,20 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
     if (action === "synced" || action === "created") {
       // Masters were created (or preprended) — proceed to queue
       queueSyncNow(inv);
+    }
+  }
+
+  async function confirmBulkDelete() {
+    try {
+      const res = await queuedFetch(`/api/v3/invoices/bulk/delete`, {
+        method: "POST", headers: {"Content-Type":"application/json", ...getAuthHeaders()},
+        body: JSON.stringify({invoice_ids: selectedIds}),
+      });
+      if (res.ok) { setActionMsg({type:"success", text:"Deleted"}); setSelectedIds([]); setRefreshKey(k=>k+1); toast.success("Invoices deleted"); }
+    } catch (e) {
+      if (!e.queued) setActionMsg({type:"error", text:"Delete failed"});
+    } finally {
+      setShowBulkDelete(false);
     }
   }
 
@@ -217,6 +240,9 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
       );
     }
     if (s === "validated" && inv.xml_generated) {
+      if (syncingId === inv.id) {
+        return <span className="text-xs font-medium text-blue-400 flex items-center gap-1.5"><span className="w-3.5 h-3.5 border-2 border-blue-400/40 border-t-blue-400 rounded-full animate-spin" />Sending…</span>;
+      }
       return <button onClick={(e) => { e.stopPropagation(); sendToTally(inv); }}
         className="text-xs font-medium text-blue-400 hover:text-blue-300 underline">{'\u2192'} Send</button>;
     }
@@ -267,9 +293,13 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
       </div>
 
       {invoices.length === 0 ? (
-        <div className="premium-card-flat p-12 text-center">
-          <p className="text-gray-400 text-lg">No invoices yet.</p>
-          <p className="text-gray-500 text-sm mt-2">Go to Extract tab to process invoices.</p>
+        <div className="premium-card-flat p-10 text-center space-y-3">
+          <div className="text-4xl opacity-40">📄</div>
+          <h3 className="text-lg font-semibold text-[var(--premium-text-primary)]">No invoices yet</h3>
+          <p className="text-sm text-[var(--text-secondary)] max-w-sm mx-auto">
+            Upload your first invoice to get started. InvoSync extracts the data, validates it, and prepares Tally-ready XML automatically.
+          </p>
+          <p className="text-xs text-[var(--text-tertiary)]">💡 Tip: you can upload multiple invoices at once from the Extract page.</p>
         </div>
       ) : (
         <div>
@@ -315,18 +345,7 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
                 Sync to Tally
               </button>
 
-              <button onClick={async () => {
-                if (!window.confirm(`Delete ${selectedIds.length} invoices?`)) return;
-                try {
-                  const res = await queuedFetch(`/api/v3/invoices/bulk/delete`, {
-                    method: "POST", headers: {"Content-Type":"application/json", ...getAuthHeaders()},
-                    body: JSON.stringify({invoice_ids: selectedIds}),
-                  });
-                  if (res.ok) { setActionMsg({type:"success", text:"Deleted"}); setSelectedIds([]); setRefreshKey(k=>k+1); }
-                } catch (e) {
-                  if (!e.queued) setActionMsg({type:"error", text:"Delete failed"});
-                }
-              }}
+              <button onClick={() => setShowBulkDelete(true)}
                 className="px-3 py-1.5 bg-red-500/20 text-red-300 rounded-lg text-xs font-medium hover:bg-red-500/30">
                 Delete
               </button>
@@ -381,7 +400,7 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
               </tbody>
             </table>
           </div>
-        </div>
+          </div>
       )}
 
       {showDashModal && dashModalData && (
@@ -436,6 +455,16 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
           missingMasters={missingMasters}
           onDone={handleMastersDone}
           getAuthHeaders={getAuthHeaders}
+        />
+      )}
+
+      {showBulkDelete && (
+        <ConfirmDialog
+          title={`Delete ${selectedIds.length} invoice${selectedIds.length > 1 ? "s" : ""}?`}
+          message="This permanently removes the selected invoices. This cannot be undone."
+          confirmLabel="Delete"
+          onConfirm={confirmBulkDelete}
+          onCancel={() => setShowBulkDelete(false)}
         />
       )}
     </div>
