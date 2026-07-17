@@ -23,6 +23,28 @@ from gst_engine import determine_gst_type
 logger = get_logger(__name__)
 
 
+def is_quota_error(exc: Exception) -> bool:
+    """Detect quota / rate-limit exhaustion from a provider error.
+
+    Gemini raises google.api_core.exceptions with 'RESOURCE_EXHAUSTED' or
+    '429' in the message; OpenRouter returns HTTP 429. We match on the common
+    signals so the pipeline can surface a clean, actionable message.
+    """
+    msg = str(exc).lower()
+    return any(s in msg for s in (
+        "quota", "resource_exhausted", "429", "rate limit", "rate_limit",
+        "exceeded", "billing", "usage limit",
+    ))
+
+
+QUOTA_ERROR_MESSAGE = (
+    "AI provider quota exceeded. The free Gemini tier is rate-limited; "
+    "add a real OPENROUTER_API_KEY (openrouter.ai) in your deployment env, "
+    "or enable billing on GEMINI_API_KEY. Extraction cannot continue until "
+    "a working key is configured."
+)
+
+
 def normalize_image(image_bytes: bytes, mime_type: str = "", max_dim: int = 2048) -> tuple[bytes, str]:
     is_pdf = image_bytes[:4] == b"%PDF"
     if is_pdf:
@@ -170,6 +192,9 @@ class OpenRouterExtractor:
                     json=payload,
                     headers=headers,
                 )
+                if resp.status_code == 429 or resp.status_code == 402:
+                    body = resp.text
+                    raise RuntimeError(f"OpenRouter quota/limit: {body[:200]}")
                 resp.raise_for_status()
                 result = resp.json()
                 text = result["choices"][0]["message"]["content"]
@@ -344,9 +369,14 @@ class ExtractionPipeline:
                     self.last_model = result.model
                     logger.info("Extracted via OpenRouter (%s)", result.model)
             except Exception as e:
-                self._circuits["openrouter"].record_failure()
-                logger.warning("OpenRouter failed (%d): %s",
-                               self._circuits["openrouter"]._failures, e)
+                # Quota errors should not trip the circuit breaker — they are not
+                # transient infra failures and retrying won't help until a key changes.
+                if is_quota_error(e):
+                    logger.warning("OpenRouter quota/rate-limit: %s", e)
+                else:
+                    self._circuits["openrouter"].record_failure()
+                    logger.warning("OpenRouter failed (%d): %s",
+                                   self._circuits["openrouter"]._failures, e)
 
         if result is None and not self._circuits["gemini"].is_open:
             try:
@@ -358,6 +388,8 @@ class ExtractionPipeline:
                     logger.info("Extracted via Gemini (%s)", result.model)
             except Exception as e:
                 self._circuits["gemini"].record_failure()
+                if is_quota_error(e):
+                    raise RuntimeError(QUOTA_ERROR_MESSAGE)
                 raise RuntimeError(f"Extraction failed: {e}")
         elif result is None and self._circuits["gemini"].is_open:
             raise RuntimeError(
