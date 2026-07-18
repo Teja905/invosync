@@ -61,9 +61,11 @@ class TallyXmlGenerator:
         self.ledger_engine = LedgerMappingEngine(self.config)
         self.include_ledgers = include_ledgers
         self.masters_created = False
+        self.journal_lines: Optional[list] = None
 
     def generate(self, inv: StandardizedInvoice, company_name: str = "",
                  reuse_masters: Optional[bool] = None) -> str:
+        self.journal_lines = []  # single source of truth for the ledger legs
         envelopes: list[ET.Element] = []
         active_company = company_name or self.config.company_name
         if reuse_masters is None:
@@ -624,6 +626,7 @@ class TallyXmlGenerator:
         ET.SubElement(bill_list, "NAME").text = _sanitize(invoice_number) or "REF"
         ET.SubElement(bill_list, "BILLTYPE").text = "New Ref"
         ET.SubElement(bill_list, "AMOUNT").text = f"{-amount if not is_debit else amount:.2f}"
+        self._record_journal(party_name, signed_amt)
 
     def _add_debit_entry(self, voucher: ET.Element, ledger_name: str, amount: float):
         if amount <= 0:
@@ -632,6 +635,7 @@ class TallyXmlGenerator:
         ET.SubElement(lst, "LEDGERNAME").text = _ensure_ledger(ledger_name)
         ET.SubElement(lst, "ISDEEMEDPOSITIVE").text = "Yes"
         ET.SubElement(lst, "AMOUNT").text = f"{amount:.2f}"
+        self._record_journal(ledger_name, amount)
 
     def _add_credit_entry(self, voucher: ET.Element, ledger_name: str, amount: float):
         if amount <= 0:
@@ -640,6 +644,21 @@ class TallyXmlGenerator:
         ET.SubElement(lst, "LEDGERNAME").text = _ensure_ledger(ledger_name)
         ET.SubElement(lst, "ISDEEMEDPOSITIVE").text = "No"
         ET.SubElement(lst, "AMOUNT").text = f"{-amount:.2f}"
+        self._record_journal(ledger_name, -amount)
+
+    def _record_journal(self, ledger_name: str, signed_amount: float):
+        """Capture a ledger leg as a journal line (single source of truth).
+
+        signed_amount > 0 -> Debit, < 0 -> Credit. Stored so reports (Trial
+        Balance, P&L, Balance Sheet) can be derived without re-parsing XML.
+        """
+        if self.journal_lines is None:
+            self.journal_lines = []
+        self.journal_lines.append({
+            "ledger": _ensure_ledger(ledger_name),
+            "debit": round(signed_amount, 2) if signed_amount > 0 else 0.0,
+            "credit": round(-signed_amount, 2) if signed_amount < 0 else 0.0,
+        })
 
     def _add_tax_ledger_entries(self, voucher: ET.Element, taxes: list[TaxEntry], is_input: bool = True, is_rcm: bool = False):
         for tax in taxes:

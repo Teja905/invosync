@@ -21,6 +21,7 @@ from audit_log import audit as audit_logger
 from config.settings import run_validation_pipeline
 from core.logging import get_logger
 from validation_layer import validate_invoice_for_xml, validate_xml_output
+from api.journal_persist import persist_journal
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -305,6 +306,15 @@ async def confirm_review(invoice_id: int, data: InvoiceUpdatePayload, current_us
         set_fields["xml_generated"] = True
         if pipe_report:
             set_fields["validation_report"] = pipe_report
+        # Persist derived journal lines + chart-of-accounts ledger types.
+        existing = await db.get_invoice(invoice_id)
+        client_id = (existing or {}).get("client_id", 0) if existing else 0
+        company_id = active_company or user_cfg.get("company_name", user_id)
+        await persist_journal(
+            db, invoice_id, user_id, company_id, client_id, standard, xml_gen, usr_cfg,
+            date_override=(extracted_update.get("date") or "").strip(),
+            voucher_type_override=str(raw.get("voucher_type", "")),
+        )
     except Exception as e:
         logger.error("Auto XML generation failed during review confirm: %s", e)
         set_fields["xml_issues"] = [f"Auto XML generation failed: {str(e)}"]
@@ -479,6 +489,11 @@ async def bulk_generate_xml(body: BulkOperation, current_user: dict = Depends(ge
             standard = legacy_to_standard(record["extracted"], cfg=usr_cfg, company_config=None)
             xml_str = xml_gen.generate(standard, company_name=active_company)
             await db.update_invoice(inv_id, {"xml_generated": True, "xml_content": xml_str})
+            company_id = active_company or user_cfg.get("company_name", user_id)
+            await persist_journal(
+                db, inv_id, user_id, company_id, record.get("client_id", 0),
+                standard, xml_gen, usr_cfg,
+            )
             results.append({"id": inv_id, "status": "generated"})
         except Exception as e:
             results.append({"id": inv_id, "status": "error", "error": str(e)})
@@ -567,6 +582,7 @@ async def undo_invoice_action(invoice_id: int, current_user: dict = Depends(get_
             updates["xml_generated"] = False
             updates["xml_issues"] = []
         await db.update_invoice(invoice_id, updates)
+        await db.set_journal_line_reversed(str(invoice_id), True)
         await audit_logger.log_invoice_action("undo", invoice_id, user_id,
                                               f"reverted confirm_review (->draft)")
         return {"ok": True, "message": "Review undone, invoice back to draft", "status": "draft"}
@@ -576,6 +592,7 @@ async def undo_invoice_action(invoice_id: int, current_user: dict = Depends(get_
         updates["xml_generated"] = False
         updates["xml_issues"] = []
         await db.update_invoice(invoice_id, updates)
+        await db.set_journal_line_reversed(str(invoice_id), True)
         await audit_logger.log_invoice_action("undo", invoice_id, user_id,
                                               f"reverted generate_xml (xml cleared)")
         return {"ok": True, "message": "XML generation undone", "xml_generated": False}
@@ -651,6 +668,11 @@ async def generate_xml_for(
             "xml_generated": True, "xml_content": xml_str,
             "xml_issues": xml_issues_obj.errors,
         })
+        company_id = active_company or user_cfg.get("company_name", user_id)
+        await persist_journal(
+            db, invoice_id, user_id, company_id, record.get("client_id", 0),
+            standard, xml_gen, usr_cfg,
+        )
         score = pipe_report.get("scores", {}).get("total", 0)
         report_json = json.dumps(pipe_report)
         await audit_logger.log_invoice_action(
@@ -711,6 +733,11 @@ async def generate_from_stored(
             "xml_generated": True, "xml_content": xml_str,
             "xml_issues": xml_validation.errors, "v3_validation": validation_result.to_dict(),
         })
+        company_id = active_company or user_cfg.get("company_name", user_id)
+        await persist_journal(
+            db, invoice_id, user_id, company_id, record.get("client_id", 0),
+            standard, xml_gen, usr_cfg,
+        )
         await audit_logger.log_invoice_action(
             "generate_xml", invoice_id, current_user.get("user_id", current_user.get("email", "")),
             details=f"generate_from_stored force={force}",
@@ -786,6 +813,11 @@ async def replay_invoice(
                     "xml_generated": True,
                     "xml_issues": xml_validation.errors,
                 })
+                company_id = active_company or user_cfg.get("company_name", user_id)
+                await persist_journal(
+                    db, invoice_id, user_id, company_id, inv.get("client_id", 0),
+                    standard, xml_gen, usr_cfg,
+                )
             except Exception as e:
                 steps.append({"step": "xml", "passed": False, "message": str(e)})
                 final_status = "failed"

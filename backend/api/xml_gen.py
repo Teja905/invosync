@@ -16,6 +16,7 @@ from config.settings import run_validation_pipeline
 from core.logging import get_logger
 from core.metrics import metrics
 from validation_layer import validate_invoice_for_xml, validate_xml_output
+from api.journal_persist import persist_journal
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -141,6 +142,16 @@ async def generate_xml(data: InvoiceDataLegacy, force: bool = Query(False), curr
                 )
             except Exception as e:
                 logger.error("DB insert error: %s", e)
+
+        # Persist journal lines (derived ledger legs) as the single source of
+        # truth for reporting — Trial Balance / P&L / Balance Sheet read these,
+        # never the raw Tally XML. Also seed the chart-of-accounts ledger types.
+        if inv_id is not None:
+            company_id = active_company or user_cfg.get("company_name", user_id)
+            await persist_journal(
+                db, inv_id, user_id, company_id, data.client_id or 0,
+                standard, xml_gen, usr_cfg,
+            )
 
         score = pipe_report.get("scores", {}).get("total", 0)
         report_json = json.dumps(pipe_report)

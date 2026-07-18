@@ -278,6 +278,37 @@ class CompanyConfig:
     def get_duties_taxes_group(self) -> str:
         return self._user_config.get("duties_taxes_group") or os.getenv(f"{self._ep}DUTIES_TAXES_GROUP", "Duties & Taxes")
 
+    def ledger_parent_group(self, ledger_name: str) -> str:
+        """Return the Tally parent group for a ledger name.
+
+        Used by the chart-of-accounts classifier to assign an account type
+        deterministically (group -> Asset/Liability/Income/Expense). Falls back
+        to keyword heuristics when the ledger is not one we generated.
+        """
+        name = (ledger_name or "").strip().lower()
+        # GST / tax ledgers
+        if "cgst" in name or "sgst" in name or "igst" in name or "gst" in name or "cess" in name:
+            return self.get_duties_taxes_group()
+        if "tds" in name:
+            return self.get_duties_taxes_group()
+        # Purchase / sales ledgers
+        if "purchase" in name:
+            return self.get_purchase_accounts_group()
+        if "sales" in name:
+            return self.get_sales_accounts_group()
+        # Bank / cash
+        if "bank" in name or "cash" in name:
+            return self.get_bank_accounts_group()
+        # Party ledgers
+        if "creditor" in name or "supplier" in name or "vendor" in name:
+            return self.get_sundry_creditors_group()
+        if "debtor" in name or "customer" in name:
+            return self.get_sundry_debtors_group()
+        # Freight / round off / expense-ish
+        if "freight" in name or "round" in name or "expense" in name:
+            return self.get_purchase_accounts_group()
+        return ""
+
     @staticmethod
     def _gst_rate_key(rate: float) -> str:
         if rate == int(rate):

@@ -693,3 +693,51 @@ How to Add a New Edge Case
 2. If severity=High, add it to the "Next Sprints" section
 3. Update this file with status changes as work progresses
 4. Treat this as a living roadmap — revisit monthly
+
+## Fix 31 — Journal engine: single source of truth for reporting (Sprint 1 of CA portal pivot)
+
+### Why
+Product pivoted to a **CA practice portal**: clients log in to see derived P&L / Balance Sheet / Trial Balance. The generated Tally XML's ledger legs are the accounting truth, but once XML is produced that information is effectively lost. We now capture every ledger leg at generation time as `journal_lines` so Trial Balance / P&L / Balance Sheet become simple DB queries — no re-parsing XML, no drift from Tally. Reports are **verification dashboards** (does our accounting balance?), not an attempt to replace Tally's reporting.
+
+### New Files
+| File | Purpose |
+|------|---------|
+| `backend/ledger_classifier.py` | Deterministic chart-of-accounts classifier. Maps Tally parent group → Asset/Liability/Income/Expense using the 28 universal groups; keyword fallback only as last resort (defaults to Expense, never drops a line). |
+| `backend/api/journal_persist.py` | Shared `persist_journal()` — writes captured legs to `journal_lines` + seeds `ledger_types`, idempotent, never blocks generation. |
+| `backend/api/reports.py` | `POST /trial-balance`, `POST /pnl`, `POST /balance-sheet` — aggregations over `journal_lines`, reversed entries excluded. |
+| `backend/tests/test_journal_ledger.py` | 10 tests: balance invariant across all 5 voucher types, party+tax capture, reset-per-generate, classifier group + keyword + 28-group coverage. |
+| `scripts/backfill_journal_lines.py` | One-off: parses existing `xml_content` and writes `journal_lines` for already-generated invoices. Idempotent. |
+
+### Changed Files
+- **`xml_generator.py`**: `_add_party_ledger` / `_add_debit_entry` / `_add_credit_entry` now call `_record_journal()`; `generate()` resets `self.journal_lines`; legs stored as `{ledger, debit, credit}` (signed amount → debit if >0, credit if <0).
+- **`database.py`**: New `journal_lines` + `ledger_types` collections with indexes (invoice, user+client+date, company+ledger); CRUD `replace_journal_lines` (idempotent overwrite), `list_journal_lines`, `set_journal_line_reversed` (immutable reversal), `upsert_ledger_type`, `get_ledger_type`, `list_ledger_types`.
+- **`company_config.py`**: `ledger_parent_group(ledger)` returns the Tally parent group deterministically (GST→Duties & Taxes, Purchase→Purchase Accounts, Bank→Bank Accounts, etc.) — feeds the classifier.
+- **`api/xml_gen.py`**, **`api/invoices.py`**: Every XML-generation path (generate-xml, confirm-review, generate-xml-for, bulk-generate, replay) now calls `persist_journal()`. Undo marks journal lines `reversed=True` (immutable, not delete).
+- **`main.py`**: Registered `reports_router`.
+
+### Data Model
+```
+journal_lines: { invoice_id, user_id, client_id, company_id, ledger, debit, credit,
+                 account_type, voucher_type, date, line_no, reversed, created_at }
+ledger_types:  { company_id, ledger, account_type, parent_group, updated_at }  (unique company+ledger)
+```
+- `company_id` = active Tally company name (SVCURRENTCOMPANY) — the tenant key.
+- `reversed` enables immutable undo: reports exclude `reversed=True` so they never double-count.
+
+### Reporting Logic
+- **Trial Balance**: SUM(debit) − SUM(credit) per ledger; `is_balanced` must always be true (legs come from balanced XML).
+- **P&L**: Income ledgers (credit net) − Expense ledgers (debit net).
+- **Balance Sheet**: Assets (debit net) vs Liabilities (credit net).
+
+### Verification
+- 250/250 pytest tests pass (240 prior + 10 new journal/classifier).
+
+## Product Pivot Context (2026-07)
+InvoSync is now the **system-of-record view** for client financials, derived from invoices already captured; authoritative books stay in Tally. Client portal is the lock-in hook. Engine is a read-model from invoices (TB → P&L → BS). Correctness is a liability: date-aware GST rates, immutable entries (reversal not delete), never show unbalanced numbers. Stack is MongoDB (Motor async) — NOT Postgres. AI keys are placeholders; `is_quota_error()` handles Gemini quota.
+
+### Next Sprints (after pilot)
+- Client login + portal UI (P&L / BS / TB views)
+- Bank reconciliation
+- Multi-currency (FX already in generator)
+- Inventory valuation / fixed-asset depreciation (belong to Tally — defer)
+- MCP server (deferred — premature)

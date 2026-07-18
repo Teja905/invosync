@@ -48,10 +48,12 @@ banking_rules = None
 organizations = None
 companies = None
 audit_logs = None
+journal_lines = None
+ledger_types = None
 
 
 async def connect():
-    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies, audit_logs
+    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies, audit_logs, journal_lines, ledger_types
     uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     # Bounded connection pool so 1000+ concurrent users don't exhaust sockets.
     _client = AsyncIOMotorClient(
@@ -70,6 +72,8 @@ async def connect():
     organizations = _db.organizations
     companies = _db.companies
     audit_logs = _db.audit_logs
+    journal_lines = _db.journal_lines
+    ledger_types = _db.ledger_types
 
     # Seed counters
     for cname in ("invoice_id", "client_id", "company_id"):
@@ -107,6 +111,21 @@ async def _create_indexes():
         )
         await audit_logs.create_index(
             [("created_at", 1)], expireAfterSeconds=7776000, name="idx_audit_ttl",
+        )
+        # Journal lines: derived ledger legs per invoice. Enables Trial Balance,
+        # P&L, Balance Sheet without re-parsing Tally XML.
+        await journal_lines.create_index(
+            [("invoice_id", 1)], name="idx_jl_invoice",
+        )
+        await journal_lines.create_index(
+            [("user_id", 1), ("client_id", 1), ("date", -1)], name="idx_jl_user_client_date",
+        )
+        await journal_lines.create_index(
+            [("company_id", 1), ("ledger", 1)], name="idx_jl_company_ledger",
+        )
+        # Ledger -> account type mapping (chart of accounts). Deterministic, stored once.
+        await ledger_types.create_index(
+            [("company_id", 1), ("ledger", 1)], unique=True, name="idx_lt_company_ledger",
         )
         await users.create_index("email", unique=True, name="idx_user_email")
         await clients.create_index(
@@ -590,3 +609,113 @@ async def get_last_audit_event(resource_type: str, resource_id: str, action: str
     if audit_logs is not None:
         return await audit_logs.find_one(query, sort=[("created_at", -1)])
     return None
+
+
+# ---------------------------------------------------------------------------
+# Journal Lines (derived ledger legs — single source of truth for reporting)
+# ---------------------------------------------------------------------------
+
+async def replace_journal_lines(invoice_id: str, lines: list) -> None:
+    """Replace all journal lines for an invoice with the freshly generated legs.
+
+    Idempotent: re-generating XML for the same invoice overwrites the legs so
+    reports never double-count. Lines must each carry: ledger, debit, credit.
+    """
+    if journal_lines is None:
+        return
+    await execute_db_write_with_retry(
+        journal_lines.delete_many, {"invoice_id": invoice_id}
+    )
+    if not lines:
+        return
+    docs = []
+    for i, ln in enumerate(lines):
+        docs.append({
+            "invoice_id": invoice_id,
+            "user_id": ln.get("user_id"),
+            "client_id": ln.get("client_id"),
+            "company_id": ln.get("company_id"),
+            "ledger": ln["ledger"],
+            "debit": float(ln.get("debit", 0.0) or 0.0),
+            "credit": float(ln.get("credit", 0.0) or 0.0),
+            "account_type": ln.get("account_type", "Expense"),
+            "voucher_type": ln.get("voucher_type"),
+            "date": ln.get("date"),
+            "line_no": i,
+            "reversed": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    await execute_db_write_with_retry(journal_lines.insert_many, docs)
+
+
+async def list_journal_lines(invoice_id: str = None, company_id: str = None,
+                             user_id: str = None, client_id: str = None,
+                             start_date: str = None, end_date: str = None) -> list:
+    """Query journal lines with optional filters."""
+    query = {}
+    if invoice_id:
+        query["invoice_id"] = invoice_id
+    if company_id:
+        query["company_id"] = company_id
+    if user_id:
+        query["user_id"] = user_id
+    if client_id:
+        query["client_id"] = client_id
+    if start_date or end_date:
+        query["date"] = {}
+        if start_date:
+            query["date"]["$gte"] = start_date
+        if end_date:
+            query["date"]["$lte"] = end_date
+    if journal_lines is not None:
+        cursor = journal_lines.find(query).sort("date", 1)
+        return await cursor.to_list(length=None)
+    return []
+
+
+async def set_journal_line_reversed(invoice_id: str, reversed: bool = True) -> int:
+    """Mark all journal lines of an invoice as reversed (immutable reversal, not delete)."""
+    if journal_lines is None:
+        return 0
+    result = await execute_db_write_with_retry(
+        journal_lines.update_many,
+        {"invoice_id": invoice_id},
+        {"$set": {"reversed": reversed}},
+    )
+    return result.modified_count or 0
+
+
+# ---------------------------------------------------------------------------
+# Ledger Types (chart of accounts: ledger -> account type)
+# ---------------------------------------------------------------------------
+
+async def upsert_ledger_type(company_id: str, ledger: str, account_type: str,
+                             parent_group: str = None) -> None:
+    """Store/refresh the account-type mapping for a ledger under a company."""
+    if ledger_types is None:
+        return
+    await execute_db_write_with_retry(
+        ledger_types.update_one,
+        {"company_id": company_id, "ledger": ledger},
+        {"$set": {
+            "company_id": company_id,
+            "ledger": ledger,
+            "account_type": account_type,
+            "parent_group": parent_group,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+
+
+async def get_ledger_type(company_id: str, ledger: str) -> Optional[dict]:
+    if ledger_types is None:
+        return None
+    return await ledger_types.find_one({"company_id": company_id, "ledger": ledger})
+
+
+async def list_ledger_types(company_id: str) -> list:
+    if ledger_types is None:
+        return []
+    cursor = ledger_types.find({"company_id": company_id})
+    return await cursor.to_list(length=None)
