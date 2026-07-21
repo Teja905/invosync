@@ -105,6 +105,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Invoice Extractor & XML Generator", lifespan=lifespan)
 
+# -- Max request body: 25MB (prevents OOM from oversized uploads) --
+_MAX_BODY_MB = int(os.getenv("MAX_BODY_MB", "25"))
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    cl = request.headers.get("content-length")
+    if cl and int(cl) > _MAX_BODY_MB * 1024 * 1024:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "REQUEST_TOO_LARGE", "message": f"Request body exceeds {_MAX_BODY_MB}MB limit"},
+        )
+    return await call_next(request)
+
+
 # -- Compression (reduce API payload size 30-60%) --
 app.add_middleware(GZipMiddleware, minimum_size=500)
 

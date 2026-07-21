@@ -668,8 +668,8 @@ async def list_journal_lines(invoice_id: str = None, company_id: str = None,
         if end_date:
             query["date"]["$lte"] = end_date
     if journal_lines is not None:
-        cursor = journal_lines.find(query).sort("date", 1)
-        return await cursor.to_list(length=None)
+    cursor = journal_lines.find(query, max_time_ms=30000).sort("date", 1)
+    return await cursor.to_list(length=50000)
     return []
 
 
@@ -717,5 +717,5 @@ async def get_ledger_type(company_id: str, ledger: str) -> Optional[dict]:
 async def list_ledger_types(company_id: str) -> list:
     if ledger_types is None:
         return []
-    cursor = ledger_types.find({"company_id": company_id})
-    return await cursor.to_list(length=None)
+    cursor = ledger_types.find({"company_id": company_id}, max_time_ms=10000)
+    return await cursor.to_list(length=500)

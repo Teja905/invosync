@@ -14,20 +14,24 @@ from .models import ExtractionJob, TaskStatus
 class ExtractionQueueManager:
     """Owns the extraction queue, task-status registry, and concurrency limits."""
 
-    def __init__(self, max_concurrent: int = 3, task_ttl: int = 3600):
-        self._queue: asyncio.Queue[ExtractionJob] = asyncio.Queue()
+    def __init__(self, max_concurrent: int = 3, task_ttl: int = 3600, max_queue_size: int = 5000, max_tasks: int = 10000):
+        self._queue: asyncio.Queue[ExtractionJob] = asyncio.Queue(maxsize=max_queue_size)
         self._tasks: dict[str, TaskStatus] = {}
         self.max_concurrent = max_concurrent
         self.task_ttl = task_ttl
+        self._max_tasks = max_tasks
 
     # ── Public API (used by routers) ──────────────────────────────────────
 
     async def submit(self, job: ExtractionJob) -> str:
         """Enqueue an extraction job and record its initial ``queued`` state.
 
-        Returns the job ID (same as ``str(job.invoice_id)``).
+        Returns the job ID (same as ``str(job.invoice_id)``). Raises
+        ``asyncio.QueueFull`` if the queue is at ``maxsize`` capacity.
         """
         job_id = str(job.invoice_id)
+        if len(self._tasks) >= self._max_tasks:
+            self.evict_stale()
         self._tasks[job_id] = TaskStatus(state="queued", timestamp=time.monotonic())
         await self._queue.put(job)
         return job_id

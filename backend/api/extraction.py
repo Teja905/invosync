@@ -70,18 +70,6 @@ async def extract(
     if not file.content_type or file.content_type not in _ALLOWED_TYPES:
         raise HTTPException(400, "Only JPG, PNG, WebP, and PDF files are supported")
 
-    payload = await file.read()
-    if len(payload) > 10 * 1024 * 1024:
-        raise HTTPException(400, "File too large. Maximum 10MB allowed.")
-
-    if file.content_type != "application/pdf" and HAS_PIL:
-        try:
-            Image.open(io.BytesIO(payload)).verify()
-        except Exception:
-            raise HTTPException(400, "File appears corrupted or is not a valid image.")
-
-    file.file.seek(0)
-
     user_config = user_config_from_current(current_user)
     company_gstin = user_config.get("company_gstin") or os.getenv("COMPANY_GSTIN", "")
     if not company_gstin:

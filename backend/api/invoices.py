@@ -1,5 +1,6 @@
 """Invoice CRUD, review, replay, progress, and preview-ledger endpoints."""
 
+import asyncio
 import base64
 import json
 from datetime import datetime, timezone
@@ -9,7 +10,7 @@ from typing import Optional
 from bson.objectid import ObjectId
 from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.responses import Response, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 import database as db
 import validation as val
@@ -462,8 +463,18 @@ async def validate_with_fixes(invoice_id: int, current_user: dict = Depends(get_
 
 # ---- Bulk Operations ----
 
+BULK_MAX = 200
+
+
 class BulkOperation(BaseModel):
     invoice_ids: list[int]
+
+    @field_validator("invoice_ids")
+    @classmethod
+    def limit_bulk(cls, v):
+        if len(v) > BULK_MAX:
+            raise ValueError(f"Bulk operation limited to {BULK_MAX} invoices")
+        return v
 
 class BulkLedgerMap(BulkOperation):
     target_ledger: str
@@ -474,29 +485,31 @@ async def bulk_generate_xml(body: BulkOperation, current_user: dict = Depends(ge
     if db.invoices is None:
         raise HTTPException(503, "Database not available")
     user_id = current_user.get("user_id", current_user.get("email", ""))
-    results = []
-    for inv_id in body.invoice_ids:
-        record = await db.get_invoice(inv_id)
-        if not record or record.get("user_id") != user_id:
-            results.append({"id": inv_id, "status": "error", "error": "Not found or access denied"})
-            continue
-        if record.get("xml_generated"):
-            results.append({"id": inv_id, "status": "skipped", "reason": "Already generated"})
-            continue
-        try:
-            from api.helpers import resolve_config, legacy_to_standard
-            user_cfg, xml_gen, usr_cfg, active_company = resolve_config(current_user)
-            standard = legacy_to_standard(record["extracted"], cfg=usr_cfg, company_config=None)
-            xml_str = xml_gen.generate(standard, company_name=active_company)
-            await db.update_invoice(inv_id, {"xml_generated": True, "xml_content": xml_str})
-            company_id = active_company or user_cfg.get("company_name", user_id)
-            await persist_journal(
-                db, inv_id, user_id, company_id, record.get("client_id", 0),
-                standard, xml_gen, usr_cfg,
-            )
-            results.append({"id": inv_id, "status": "generated"})
-        except Exception as e:
-            results.append({"id": inv_id, "status": "error", "error": str(e)})
+    sem = asyncio.Semaphore(10)
+
+    async def _process_one(inv_id):
+        async with sem:
+            record = await db.get_invoice(inv_id)
+            if not record or record.get("user_id") != user_id:
+                return {"id": inv_id, "status": "error", "error": "Not found or access denied"}
+            if record.get("xml_generated"):
+                return {"id": inv_id, "status": "skipped", "reason": "Already generated"}
+            try:
+                from api.helpers import resolve_config, legacy_to_standard
+                user_cfg, xml_gen, usr_cfg, active_company = resolve_config(current_user)
+                standard = legacy_to_standard(record["extracted"], cfg=usr_cfg, company_config=None)
+                xml_str = xml_gen.generate(standard, company_name=active_company)
+                await db.update_invoice(inv_id, {"xml_generated": True, "xml_content": xml_str})
+                company_id = active_company or user_cfg.get("company_name", user_id)
+                await persist_journal(
+                    db, inv_id, user_id, company_id, record.get("client_id", 0),
+                    standard, xml_gen, usr_cfg,
+                )
+                return {"id": inv_id, "status": "generated"}
+            except Exception as e:
+                return {"id": inv_id, "status": "error", "error": str(e)}
+
+    results = await asyncio.gather(*[_process_one(i) for i in body.invoice_ids])
     return {"results": results, "total": len(body.invoice_ids), "generated": sum(1 for r in results if r["status"] == "generated")}
 
 
@@ -506,19 +519,21 @@ async def bulk_sync(body: BulkOperation, current_user: dict = Depends(get_authen
     if db.invoices is None:
         raise HTTPException(503, "Database not available")
     user_id = current_user.get("user_id", current_user.get("email", ""))
-    results = []
-    for inv_id in body.invoice_ids:
-        record = await db.get_invoice(inv_id)
-        if not record or record.get("user_id") != user_id:
-            results.append({"id": inv_id, "status": "error", "error": "Not found"})
-            continue
-        if record.get("status") != "validated":
-            results.append({"id": inv_id, "status": "skipped", "reason": f"Status is '{record.get('status')}', not 'validated'"})
-            continue
-        await db.update_invoice_status(inv_id, "exported")
-        await audit_logger.log_invoice_action("sync", inv_id, user_id, "bulk_sync",
-            snapshot={"status": "validated", "synced_at": None})
-        results.append({"id": inv_id, "status": "exported"})
+    sem = asyncio.Semaphore(20)
+
+    async def _sync_one(inv_id):
+        async with sem:
+            record = await db.get_invoice(inv_id)
+            if not record or record.get("user_id") != user_id:
+                return {"id": inv_id, "status": "error", "error": "Not found"}
+            if record.get("status") != "validated":
+                return {"id": inv_id, "status": "skipped", "reason": f"Status is '{record.get('status')}', not 'validated'"}
+            await db.update_invoice_status(inv_id, "exported")
+            await audit_logger.log_invoice_action("sync", inv_id, user_id, "bulk_sync",
+                snapshot={"status": "validated", "synced_at": None})
+            return {"id": inv_id, "status": "exported"}
+
+    results = await asyncio.gather(*[_sync_one(i) for i in body.invoice_ids])
     return {"results": results, "total": len(body.invoice_ids), "exported": sum(1 for r in results if r["status"] == "exported")}
 
 
@@ -528,12 +543,18 @@ async def bulk_delete(body: BulkOperation, current_user: dict = Depends(get_auth
     if db.invoices is None:
         raise HTTPException(503, "Database not available")
     user_id = current_user.get("user_id", current_user.get("email", ""))
-    deleted = 0
-    for inv_id in body.invoice_ids:
-        record = await db.get_invoice(inv_id)
-        if record and record.get("user_id") == user_id:
-            await db.execute_db_write_with_retry(db.invoices.delete_one, {"display_id": inv_id})
-            deleted += 1
+    sem = asyncio.Semaphore(20)
+
+    async def _delete_one(inv_id):
+        async with sem:
+            record = await db.get_invoice(inv_id)
+            if record and record.get("user_id") == user_id:
+                await db.execute_db_write_with_retry(db.invoices.delete_one, {"display_id": inv_id})
+                return True
+            return False
+
+    results = await asyncio.gather(*[_delete_one(i) for i in body.invoice_ids])
+    deleted = sum(1 for r in results if r)
     return {"deleted": deleted, "total": len(body.invoice_ids)}
 
 
