@@ -363,15 +363,17 @@ async def insert_invoice(
     user_id: str, client_id: int, extracted: dict, validation: dict,
     xml_generated: bool = False, xml_content: str = None, xml_issues: list = None,
     file_hash: str = "", image_data: str = "", company_id: int = None,
+    storage_key: str = "", display_id: int = None,
 ) -> tuple[int, object]:
     doc = {
-        "display_id": await next_id("invoice_id"),
+        "display_id": display_id or await next_id("invoice_id"),
         "user_id": user_id,
         "company_id": company_id,
         "client_id": client_id,
         # FIX: file_hash stored at TOP LEVEL — not inside extracted — so the index works
         "file_hash": file_hash,
-        "image_data": image_data,
+        "image_data": image_data if image_data else None,  # kept for backward compat
+        "storage_key": storage_key or None,  # new: S3/R2 path, replaces image_data for new invoices
         "created_at": datetime.now(timezone.utc).isoformat(),
         "extracted": extracted,
         "validation": validation,
@@ -668,8 +670,8 @@ async def list_journal_lines(invoice_id: str = None, company_id: str = None,
         if end_date:
             query["date"]["$lte"] = end_date
     if journal_lines is not None:
-    cursor = journal_lines.find(query, max_time_ms=30000).sort("date", 1)
-    return await cursor.to_list(length=50000)
+        cursor = journal_lines.find(query, max_time_ms=30000).sort("date", 1)
+        return await cursor.to_list(length=50000)
     return []
 
 

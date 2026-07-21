@@ -4,7 +4,6 @@ Imports global singletons directly so the worker loop stays self-contained.
 """
 
 import asyncio
-import base64
 import time
 
 import database as db
@@ -13,6 +12,7 @@ from audit_log import audit as audit_logger
 from company_config import CompanyConfig
 from core.logging import get_logger
 from ocr_postproc import clean_extracted_invoice_payload
+from storage import store as storage_store
 from api.app_state import extraction_pipeline, company_config as _company_config
 from api.helpers import legacy_to_standard as _legacy_to_standard
 from core.metrics import metrics
@@ -58,7 +58,8 @@ async def _process_job(job: ExtractionJob, manager: ExtractionQueueManager):
                 pass
 
         validation = val.run_full_validation(data, existing_list)
-        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        inv_display_id = await db.next_id("invoice_id")
+        storage_key = await storage_store(job.user_id, inv_display_id, image_bytes)
         active_company_id = (
             (job.user_config or {}).get("active_company_id")
             if isinstance(job.user_config, dict)
@@ -70,7 +71,8 @@ async def _process_job(job: ExtractionJob, manager: ExtractionQueueManager):
             extracted=data,
             validation=validation,
             file_hash=file_hash,
-            image_data=image_b64,
+            storage_key=storage_key,
+            display_id=inv_display_id,
             company_id=active_company_id,
         )
         if validation.get("decision") == "high" and db.invoices is not None:
@@ -84,7 +86,8 @@ async def _process_job(job: ExtractionJob, manager: ExtractionQueueManager):
                     "display_id": inv_display_id,
                     "extracted": data,
                     "validation": validation,
-                    "image_data": image_b64,
+                    "storage_key": storage_key,
+                    "image_data": None,
                 }
             },
         )

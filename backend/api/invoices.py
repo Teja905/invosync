@@ -23,6 +23,7 @@ from config.settings import run_validation_pipeline
 from core.logging import get_logger
 from validation_layer import validate_invoice_for_xml, validate_xml_output
 from api.journal_persist import persist_journal
+from storage import retrieve as storage_retrieve
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -108,19 +109,25 @@ async def get_invoice_xml(invoice_id: int, current_user: dict = Depends(get_auth
 
 @router.get("/invoices/{invoice_id}/image")
 async def get_invoice_image(invoice_id: int, current_user: dict = Depends(get_authenticated_user)):
-    """Stream the stored invoice image as a JPEG response."""
+    """Stream the stored invoice image. Uses object storage first, falls back to base64 for legacy invoices."""
     if db.invoices is None:
         raise HTTPException(503, "Database not available")
     record = await db.get_invoice(invoice_id)
     if not record:
         raise HTTPException(404, "Invoice not found")
-    image_b64 = record.get("image_data", "")
-    if not image_b64:
+    image_bytes = None
+    storage_key = record.get("storage_key")
+    if storage_key:
+        image_bytes = await storage_retrieve(storage_key)
+    if image_bytes is None:
+        image_b64 = record.get("image_data", "")
+        if image_b64:
+            try:
+                image_bytes = base64.b64decode(image_b64)
+            except Exception:
+                pass
+    if image_bytes is None:
         raise HTTPException(404, "No image stored for this invoice")
-    try:
-        image_bytes = base64.b64decode(image_b64)
-    except Exception:
-        raise HTTPException(500, "Corrupt image data")
 
     async def _stream_chunks():
         chunk_size = 65536
