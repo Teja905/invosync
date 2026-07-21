@@ -50,10 +50,13 @@ companies = None
 audit_logs = None
 journal_lines = None
 ledger_types = None
+subscriptions = None
+plans = None
+client_users = None
 
 
 async def connect():
-    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies, audit_logs, journal_lines, ledger_types
+    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies, audit_logs, journal_lines, ledger_types, subscriptions, plans, client_users
     uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     # Bounded connection pool so 1000+ concurrent users don't exhaust sockets.
     _client = AsyncIOMotorClient(
@@ -74,6 +77,9 @@ async def connect():
     audit_logs = _db.audit_logs
     journal_lines = _db.journal_lines
     ledger_types = _db.ledger_types
+    subscriptions = _db.subscriptions
+    plans = _db.plans
+    client_users = _db.client_users
 
     # Seed counters
     for cname in ("invoice_id", "client_id", "company_id"):
@@ -130,6 +136,19 @@ async def _create_indexes():
         await users.create_index("email", unique=True, name="idx_user_email")
         await clients.create_index(
             [("user_id", 1), ("client_id", 1)], unique=True, name="idx_client_user",
+        )
+        await client_users.create_index(
+            [("user_id", 1), ("email", 1)], unique=True, name="idx_client_user_email",
+        )
+        await client_users.create_index(
+            [("client_id", 1)], name="idx_client_user_client",
+        )
+        await plans.create_index("plan_id", unique=True, name="idx_plan_id")
+        await subscriptions.create_index(
+            [("user_id", 1)], unique=True, name="idx_sub_user",
+        )
+        await subscriptions.create_index(
+            [("razorpay_subscription_id", 1)], unique=True, sparse=True, name="idx_sub_razorpay",
         )
     except Exception as e:
         logger.warning("Index creation warning (non-fatal): %s", e)
@@ -721,3 +740,138 @@ async def list_ledger_types(company_id: str) -> list:
         return []
     cursor = ledger_types.find({"company_id": company_id}, max_time_ms=10000)
     return await cursor.to_list(length=500)
+
+
+# ---------------------------------------------------------------------------
+# Plans & Subscriptions (Razorpay billing)
+# ---------------------------------------------------------------------------
+
+DEFAULT_PLANS = [
+    {
+        "plan_id": "starter",
+        "name": "Starter",
+        "price": 0,
+        "currency": "INR",
+        "interval": "month",
+        "features": ["50 invoices/month", "1 company", "Basic reports (TB/P&L/BS)"],
+        "invoice_limit": 50,
+        "company_limit": 1,
+        "client_portal": False,
+        "razorpay_plan_id": "",
+    },
+    {
+        "plan_id": "professional",
+        "name": "Professional",
+        "price": 2499,
+        "currency": "INR",
+        "interval": "month",
+        "features": ["500 invoices/month", "3 companies", "Full reports", "Client portal"],
+        "invoice_limit": 500,
+        "company_limit": 3,
+        "client_portal": True,
+        "razorpay_plan_id": "",
+    },
+    {
+        "plan_id": "enterprise",
+        "name": "Enterprise",
+        "price": 9999,
+        "currency": "INR",
+        "interval": "month",
+        "features": ["Unlimited invoices", "Unlimited companies", "Full reports", "Client portal", "Priority support"],
+        "invoice_limit": None,
+        "company_limit": None,
+        "client_portal": True,
+        "razorpay_plan_id": "",
+    },
+]
+
+
+async def seed_plans():
+    if plans is None:
+        return
+    for plan in DEFAULT_PLANS:
+        existing = await plans.find_one({"plan_id": plan["plan_id"]})
+        if not existing:
+            await execute_db_write_with_retry(plans.insert_one, plan)
+
+
+async def get_plan(plan_id: str) -> Optional[dict]:
+    if plans is None:
+        return None
+    return await plans.find_one({"plan_id": plan_id}, max_time_ms=5000)
+
+
+async def list_plans() -> list[dict]:
+    if plans is None:
+        return []
+    cursor = plans.find({}, {"_id": 0}, max_time_ms=5000)
+    return await cursor.to_list(length=100)
+
+
+async def get_subscription(user_id: str) -> Optional[dict]:
+    if subscriptions is None:
+        return None
+    return await subscriptions.find_one({"user_id": user_id}, max_time_ms=5000)
+
+
+async def upsert_subscription(user_id: str, data: dict) -> None:
+    if subscriptions is None:
+        return
+    data["user_id"] = user_id
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await execute_db_write_with_retry(
+        subscriptions.update_one,
+        {"user_id": user_id},
+        {"$set": data},
+        upsert=True,
+    )
+
+
+async def update_subscription_razorpay(user_id: str, sub_id: str, status: str) -> None:
+    if subscriptions is None:
+        return
+    await execute_db_write_with_retry(
+        subscriptions.update_one,
+        {"user_id": user_id},
+        {"$set": {
+            "razorpay_subscription_id": sub_id,
+            "status": status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Client Users (portal login for CA's clients)
+# ---------------------------------------------------------------------------
+
+async def create_client_user(email: str, password_hash: str, name: str,
+                             user_id: str, client_id: int) -> dict:
+    if client_users is None:
+        return {}
+    doc = {
+        "email": email.lower().strip(),
+        "password_hash": password_hash,
+        "name": name.strip(),
+        "user_id": user_id,
+        "client_id": client_id,
+        "role": "client",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_login": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await execute_db_write_with_retry(client_users.insert_one, doc)
+    doc["_id"] = str(result.inserted_id)
+    return doc
+
+
+async def get_client_user(email: str) -> Optional[dict]:
+    if client_users is None:
+        return None
+    return await client_users.find_one({"email": email.lower().strip()}, max_time_ms=5000)
+
+
+async def get_client_users_for_ca(user_id: str) -> list[dict]:
+    if client_users is None:
+        return []
+    cursor = client_users.find({"user_id": user_id}, max_time_ms=5000)
+    return await cursor.to_list(length=1000)

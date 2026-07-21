@@ -2,10 +2,84 @@
 
 import re
 from collections import defaultdict
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from schemas import GSTType, GST_STATE_CODES, ALLOWED_GST_SLABS, TaxEntry
+
+# ===== Date-Aware GST Rate Schedule =====
+# GST rates have changed over time. This schedule defines which slabs were
+# valid in each period. Key changes:
+#   2017-07-01: GST launch — 0%, 5%, 12%, 18%, 28% (+ 3% gold)
+#   2017-11-15: 0.25% added for cut/polished diamonds and gemstones
+#   2018-01-25: 0.1% added for certain low-value textiles and flooring materials
+#   2021-01-01: Multiple rate rationalizations (notably 12→5% for certain items)
+#   2022-07-18: Rate changes on many items (notably 12→18% on some)
+#   2024-10-01: Recent adjustments
+#
+# The schedule uses YYYY-MM-DD strings as keys. To check if a slab was valid
+# on a given date, we find the latest schedule entry before or on that date.
+
+GST_RATE_SCHEDULE: list[tuple[str, set[float]]] = [
+    ("2017-07-01", {0, 3, 5, 12, 18, 28}),
+    ("2017-11-15", {0, 0.25, 3, 5, 12, 18, 28}),
+    ("2018-01-25", {0, 0.1, 0.25, 3, 5, 12, 18, 28}),
+]
+
+
+def get_valid_slabs_for_date(date_str: str | None) -> set[float]:
+    """Return the set of valid GST slabs for a given invoice date.
+
+    Falls back to the most recent schedule (i.e. current allowed slabs)
+    if the date is missing, unparseable, or after the last schedule entry.
+    """
+    if not date_str:
+        return ALLOWED_GST_SLABS
+    try:
+        inv_date = _parse_date(date_str)
+    except (ValueError, TypeError):
+        return ALLOWED_GST_SLABS
+    valid = ALLOWED_GST_SLABS  # fallback = current allowed
+    for effective_date_str, slabs in GST_RATE_SCHEDULE:
+        try:
+            effective = date.fromisoformat(effective_date_str)
+        except ValueError:
+            continue
+        if inv_date >= effective:
+            valid = slabs
+    return valid
+
+
+def _parse_date(date_str: str) -> date:
+    """Parse YYYY-MM-DD or DD/MM/YYYY to a date object."""
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        return datetime.strptime(date_str, "%Y-%m-%d").date()
+    elif re.match(r"^\d{2}/\d{2}/\d{4}$", date_str):
+        return datetime.strptime(date_str, "%d/%m/%Y").date()
+    raise ValueError(f"Cannot parse date: {date_str}")
+
+
+def validate_tax_rate_for_date(rate: float, invoice_date: str | None = None) -> dict:
+    """Validate a tax rate against the slabs that were in effect on the invoice date.
+
+    Returns the same structure as validate_tax_rate() but with date context.
+    """
+    valid_slabs = get_valid_slabs_for_date(invoice_date) if invoice_date else ALLOWED_GST_SLABS
+    if rate in valid_slabs:
+        return {"valid": True, "message": f"Tax rate {rate}% is valid"}
+    near = min(valid_slabs, key=lambda x: abs(x - rate))
+    if abs(rate - near) <= 0.5:
+        return {
+            "valid": True,
+            "message": f"Tax rate {rate}% rounded to nearest slab {near}%",
+            "corrected_rate": near,
+        }
+    return {
+        "valid": False,
+        "message": f"Tax rate {rate}% is not a valid Indian GST slab. Nearest: {near}%",
+        "suggested_rate": near,
+    }
 
 
 def precise_round(value: float | Decimal) -> Decimal:
@@ -105,7 +179,9 @@ def _extract_state_code(gstin: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def validate_tax_rate(rate: float) -> dict:
+def validate_tax_rate(rate: float, invoice_date: str | None = None) -> dict:
+    if invoice_date:
+        return validate_tax_rate_for_date(rate, invoice_date)
     if rate in ALLOWED_GST_SLABS:
         return {"valid": True, "message": f"Tax rate {rate}% is valid"}
     near = min(ALLOWED_GST_SLABS, key=lambda x: abs(x - rate))

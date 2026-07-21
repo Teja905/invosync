@@ -56,6 +56,7 @@ from api.invoices import router as invoice_router
 from api.tally_sync import router as tally_sync_router
 from api.ledgers import router as ledgers_router
 from api.reports import router as reports_router
+from api.billing import router as billing_router
 _AUTH_ENABLED = False
 
 
@@ -245,7 +246,11 @@ app.include_router(learning_router)
 app.include_router(invoice_router)
 app.include_router(tally_sync_router)
 app.include_router(ledgers_router)
-app.include_router(reports_router)
+    app.include_router(reports_router)
+    app.include_router(billing_router)
+
+    # Seed default plans on startup (idempotent)
+    await db.seed_plans()
 
 
 # ---------------------------------------------------------------------------

@@ -10,9 +10,9 @@ from ledger_mapping import LedgerMappingEngine
 from rules_engine import RulesEngine
 from schemas import (
     StandardizedInvoice, VoucherType, GSTType, DocumentClass,
-    LineItem, TaxEntry, ALLOWED_GST_SLABS,
+    LineItem, TaxEntry,
 )
-from gst_engine import validate_gstin, determine_gst_type, validate_tax_structure
+from gst_engine import validate_gstin, determine_gst_type, validate_tax_structure, get_valid_slabs_for_date
 from voucher_classifier import classify_document_detailed, classify_voucher_type
 
 _config = CompanyConfig()
@@ -323,20 +323,22 @@ def _check_dates(inv: StandardizedInvoice, result: ValidationResult):
 
 def _check_tax_rates(inv: StandardizedInvoice, result: ValidationResult):
     rates_seen = set()
+    valid_slabs_for_date = get_valid_slabs_for_date(inv.invoice_date)
     for item in inv.line_items:
         r = item.tax_rate
         if r == 0:
             continue
         rates_seen.add(r)
-        if r not in ALLOWED_GST_SLABS:
-            near = min(ALLOWED_GST_SLABS, key=lambda x: abs(x - r))
+        if r not in valid_slabs_for_date:
+            near = min(valid_slabs_for_date, key=lambda x: abs(x - r))
             if abs(r - near) <= 0.5:
                 result.add_warning(f"Tax rate {r}% corrected to {near}% for '{item.description}'")
                 result.corrections[f"line_item_rate_{item.description}"] = near
             else:
                 result.add_check(
                     "tax_rates", False,
-                    f"Invalid GST rate {r}% for '{item.description}'. Allowed: {sorted(ALLOWED_GST_SLABS)}",
+                    f"Invalid GST rate {r}% for '{item.description}' (date: {inv.invoice_date or 'N/A'}). "
+                    f"Allowed for this date: {sorted(valid_slabs_for_date)}",
                 )
     if rates_seen and not result.checks.get("tax_rates", {}).get("pass", True):
         pass
