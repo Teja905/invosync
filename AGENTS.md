@@ -732,6 +732,24 @@ ledger_types:  { company_id, ledger, account_type, parent_group, updated_at }  (
 ### Verification
 - 250/250 pytest tests pass (240 prior + 10 new journal/classifier).
 
+## Fixes 32-33 — Scale to 10K users
+
+### Fix 32 — Operational hardening (stop the server from crashing under burst load)
+- **MongoDB timeouts**: 30s `max_time_ms` on all queries. Without this, one slow query blocks all pooled connections → entire server hangs.
+- **Request body limit**: 25MB `Content-Length` middleware + streaming reads. Was loading uploads into memory *twice* before checking size.
+- **Bounded queue**: `asyncio.Queue(maxsize=5000)` + task registry caps. Was unlimited → OOM under burst.
+- **Concurrent bulk**: `asyncio.Semaphore(10)/Semaphore(20)`, cap at 200 invoices. Was serial for-loop → 1500 DB round-trips for 500 invoices.
+- 250 tests pass.
+
+### Fix 33 — Object storage for images (MongoDB 512MB free tier fix)
+- **`storage.py`**: abstract file backend — local filesystem for dev, async S3 (aioboto3) for prod (R2/S3/MinIO).
+- **Extraction pipeline**: stores image to S3 via `storage.store()`, stores only `storage_key` in MongoDB (path like `invoices/{user_id}/{invoice_id}.jpg`).
+- **Legacy fallback**: image endpoint checks `storage_key` first; falls back to `image_data` (base64) for existing invoices.
+- **Env vars**: `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_ENDPOINT`, `S3_REGION`. Empty = local filesystem for dev.
+- **`scripts/migrate_images_to_s3.py`**: one-off migration for existing base64 images.
+- **MongoDB storage drop**: ~95% reduction in invoice document size (no more 270KB base64 blobs per invoice).
+- 250 tests pass.
+
 ## Product Pivot Context (2026-07)
 InvoSync is now the **system-of-record view** for client financials, derived from invoices already captured; authoritative books stay in Tally. Client portal is the lock-in hook. Engine is a read-model from invoices (TB → P&L → BS). Correctness is a liability: date-aware GST rates, immutable entries (reversal not delete), never show unbalanced numbers. Stack is MongoDB (Motor async) — NOT Postgres. AI keys are placeholders; `is_quota_error()` handles Gemini quota.
 
