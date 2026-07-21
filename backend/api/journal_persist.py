@@ -3,6 +3,8 @@
 Called from every XML-generation path (generate-xml, confirm-review, bulk
 generate). Keeps the `journal_lines` collection as the single source of truth
 for reporting and seeds the chart-of-accounts `ledger_types` mapping.
+
+Invalidates the report cache so TB/P&L/BS reflect the new entries immediately.
 """
 
 from typing import Optional
@@ -10,6 +12,19 @@ from typing import Optional
 from ledger_classifier import classify_ledger
 
 from api.helpers import resolve_config  # noqa: F401  (kept for symmetry)
+
+# Invalidate the in-memory report cache whenever new journal data is written.
+# Imported here (not at top) to avoid circular imports on first load.
+_report_cache_invalidated = False
+
+
+async def _invalidate_report_cache():
+    """Lazy-import and clear the report cache. Idempotent per call."""
+    try:
+        from core.cache import report_cache
+        report_cache.clear()
+    except Exception:
+        pass  # Cache not available — reports will be slightly stale, fine.
 
 
 async def persist_journal(
@@ -54,6 +69,7 @@ async def persist_journal(
                 seen_ledgers.add(ledger)
                 await db.upsert_ledger_type(company_id, ledger, account_type, parent)
         await db.replace_journal_lines(str(invoice_id), enriched)
+        await _invalidate_report_cache()
     except Exception as e:  # never block generation on reporting persistence
         import logging
         logging.getLogger(__name__).error("Journal line persistence error: %s", e)

@@ -129,6 +129,10 @@ async def _create_indexes():
         await journal_lines.create_index(
             [("company_id", 1), ("ledger", 1)], name="idx_jl_company_ledger",
         )
+        await journal_lines.create_index(
+            [("user_id", 1), ("reversed", 1), ("date", -1), ("client_id", 1)],
+            name="idx_jl_report_query",
+        )
         # Ledger -> account type mapping (chart of accounts). Deterministic, stored once.
         await ledger_types.create_index(
             [("company_id", 1), ("ledger", 1)], unique=True, name="idx_lt_company_ledger",
@@ -671,8 +675,14 @@ async def replace_journal_lines(invoice_id: str, lines: list) -> None:
 
 async def list_journal_lines(invoice_id: str = None, company_id: str = None,
                              user_id: str = None, client_id: str = None,
-                             start_date: str = None, end_date: str = None) -> list:
-    """Query journal lines with optional filters."""
+                             start_date: str = None, end_date: str = None,
+                             reversed_filter: bool = False) -> list:
+    """Query journal lines with optional filters.
+
+    If reversed_filter=True, only non-reversed entries are returned.
+    Report queries should always use reversed_filter=True so the
+    idx_jl_report_query index is fully utilised.
+    """
     query = {}
     if invoice_id:
         query["invoice_id"] = invoice_id
@@ -682,6 +692,8 @@ async def list_journal_lines(invoice_id: str = None, company_id: str = None,
         query["user_id"] = user_id
     if client_id:
         query["client_id"] = client_id
+    if reversed_filter:
+        query["reversed"] = False
     if start_date or end_date:
         query["date"] = {}
         if start_date:
