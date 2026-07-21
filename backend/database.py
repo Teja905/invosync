@@ -53,10 +53,28 @@ ledger_types = None
 subscriptions = None
 plans = None
 client_users = None
+ai_cache = None
+
+# Sentinel value to detect uninitialized collections
+_NOT_INITIALIZED = "database not connected — call connect() first"
+
+
+def require_connected():
+    """Guard: raise a clear error if a collection is accessed before connect().
+
+    Call this at the top of any function that accesses a collection variable.
+    Catches the common bug where a module imports `db.invoices` but `connect()`
+    hasn't been called yet, giving a confusing `AttributeError: 'NoneType'...`.
+    """
+    if invoices is None:
+        raise RuntimeError(
+            "Database not connected. "
+            "Ensure `await db.connect()` is called (in lifespan) before using collections."
+        )
 
 
 async def connect():
-    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies, audit_logs, journal_lines, ledger_types, subscriptions, plans, client_users
+    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies, audit_logs, journal_lines, ledger_types, subscriptions, plans, client_users, ai_cache
     uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     # Bounded connection pool so 1000+ concurrent users don't exhaust sockets.
     _client = AsyncIOMotorClient(
@@ -80,6 +98,7 @@ async def connect():
     subscriptions = _db.subscriptions
     plans = _db.plans
     client_users = _db.client_users
+    ai_cache = _db.ai_cache
 
     # Seed counters
     for cname in ("invoice_id", "client_id", "company_id"):
@@ -108,6 +127,18 @@ async def _create_indexes():
         )
         await invoices.create_index(
             [("user_id", 1), ("status", 1), ("created_at", -1)], name="idx_user_status",
+        )
+        # Period-based reports: fast date-range filtering per company
+        await invoices.create_index(
+            [("company_id", 1), ("invoice_date", -1)], name="idx_company_date",
+        )
+        # Vendor lookup: eliminates full collection scans on vendor search
+        await invoices.create_index(
+            [("vendor_name", 1), ("company_id", 1)], name="idx_vendor_company",
+        )
+        # Status counts per company: instant dashboard aggregations
+        await invoices.create_index(
+            [("status", 1), ("company_id", 1)], name="idx_status_company",
         )
         await audit_logs.create_index(
             [("resource_type", 1), ("resource_id", 1), ("created_at", -1)], name="idx_audit_resource",
@@ -154,6 +185,10 @@ async def _create_indexes():
         await subscriptions.create_index(
             [("razorpay_subscription_id", 1)], unique=True, sparse=True, name="idx_sub_razorpay",
         )
+        # AI extraction cache — TTL on cached_at auto-expires after 7 days
+        await ai_cache.create_index(
+            [("cached_at", 1)], expireAfterSeconds=604800, name="idx_cache_ttl",
+        )
     except Exception as e:
         logger.warning("Index creation warning (non-fatal): %s", e)
 
@@ -164,6 +199,7 @@ async def disconnect():
 
 
 async def next_id(counter_name: str = "invoice_id") -> int:
+    require_connected()
     result = await execute_db_write_with_retry(
         counters.find_one_and_update,
         {"_id": counter_name},

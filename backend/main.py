@@ -32,7 +32,7 @@ from config.settings import (
 )
 from api.app_state import (
     extraction_pipeline, company_config, learner,
-    queue_manager, MAX_CONCURRENT_EXTRACTIONS,
+    queue_manager, ai_cache, MAX_CONCURRENT_EXTRACTIONS,
 )
 from background import run_extraction_worker, run_cleanup_loop
 from api.extraction import router as extraction_router
@@ -57,8 +57,6 @@ from api.tally_sync import router as tally_sync_router
 from api.ledgers import router as ledgers_router
 from api.reports import router as reports_router
 from api.billing import router as billing_router
-_AUTH_ENABLED = False
-
 
 load_dotenv()
 
@@ -72,19 +70,37 @@ _company_config = company_config
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: connect DB, load models, launch background workers."""
+    """Startup: connect DB, load models, launch supervised background workers.
+
+    All background tasks are tracked and monitored:
+    - If any worker crashes, it's logged and the task reference is cleaned up
+    - On shutdown, all tasks are cancelled in reverse order
+    - Extraction worker + cleanup loop are isolated so one crash doesn't cascade
+    """
     init_sentry()
+
+    # ── Phase 1: Database ──
     try:
         await db.connect()
     except Exception as e:
         logger.warning("MongoDB connection failed (%s). Running without database.", e)
         logger.warning("Invoice data will NOT be persisted across restarts.")
+
+    # Wire AI cache to MongoDB collection (falls back to memory-only if DB down)
+    if db.ai_cache is not None:
+        ai_cache._collection = db.ai_cache
+        logger.info("AI cache: MongoDB-backed (TTL 7 days)")
+    else:
+        logger.info("AI cache: memory-only (DB unavailable)")
+
     has_openrouter = bool(os.getenv("OPENROUTER_API_KEY"))
     has_gemini = bool(os.getenv("GEMINI_API_KEY"))
     logger.info("API keys: OpenRouter=%s Gemini=%s (using fallback=%s)",
                 "YES" if has_openrouter else "NO",
                 "YES" if has_gemini else "NO",
                 "NO" if has_gemini else "YES")
+
+    # ── Phase 2: Learner + Config Migration ──
     try:
         await _learner.load("default@local")
         logger.info("LedgerLearner loaded %d corrections", _learner.stats()["corrections_count"])
@@ -96,12 +112,66 @@ async def lifespan(app: FastAPI):
             logger.info("Auto-migrated env config to company_id=%d", cid)
     except Exception as e:
         logger.warning("Company auto-migrate failed: %s", e)
-    asyncio.create_task(run_extraction_worker(queue_manager))
-    asyncio.create_task(run_cleanup_loop(queue_manager))
+
+    # ── Phase 3: Background Workers (supervised) ──
+    _background_tasks: list[asyncio.Task] = []
+
+    async def _run_supervised(coro, name: str):
+        """Run a background coroutine and log if it exits unexpectedly.
+
+        If the task finishes (not cancelled), we log at warning level
+        so operators know a worker stopped. Cancellation is expected
+        during graceful shutdown.
+        """
+        try:
+            await coro
+        except asyncio.CancelledError:
+            logger.info("Background task '%s' cancelled (shutdown)", name)
+        except Exception:
+            logger.exception("Background task '%s' crashed — restart needed", name)
+
+    _background_tasks.append(
+        asyncio.create_task(
+            _run_supervised(run_extraction_worker(queue_manager), "extraction_worker"),
+            name="extraction_worker",
+        )
+    )
+    _background_tasks.append(
+        asyncio.create_task(
+            _run_supervised(run_cleanup_loop(queue_manager), "cleanup_loop"),
+            name="cleanup_loop",
+        )
+    )
     logger.info("Extraction queue worker started (max %s concurrent)", MAX_CONCURRENT_EXTRACTIONS)
-    asyncio.create_task(_keepalive_self_ping())
+
+    if _APP_URL:
+        _background_tasks.append(
+            asyncio.create_task(
+                _run_supervised(_keepalive_self_ping(), "keepalive"),
+                name="keepalive",
+            )
+        )
+
+    try:
+        await db.seed_plans()
+    except Exception as e:
+        logger.warning("Plan seeding failed: %s", e)
+
+    # ── Yield: app is live ──
     yield
+
+    # ── Shutdown: cancel workers before DB disconnect ──
+    logger.info("Shutting down %d background tasks...", len(_background_tasks))
+    for task in _background_tasks:
+        task.cancel()
+    if _background_tasks:
+        done, pending = await asyncio.wait(_background_tasks, timeout=10)
+        if pending:
+            logger.warning("%d tasks did not finish within 10s timeout", len(pending))
+    _background_tasks.clear()
+
     await db.disconnect()
+    logger.info("Shutdown complete")
 
 
 app = FastAPI(title="Invoice Extractor & XML Generator", lifespan=lifespan)
@@ -246,11 +316,11 @@ app.include_router(learning_router)
 app.include_router(invoice_router)
 app.include_router(tally_sync_router)
 app.include_router(ledgers_router)
-    app.include_router(reports_router)
-    app.include_router(billing_router)
+app.include_router(reports_router)
+app.include_router(billing_router)
 
-    # Seed default plans on startup (idempotent)
-    await db.seed_plans()
+# Seed default plans on startup (idempotent)
+# (moved to lifespan below)
 
 
 # ---------------------------------------------------------------------------
