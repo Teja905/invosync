@@ -5,7 +5,6 @@ import hmac
 import logging
 import os
 
-import razorpay
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 import database as db
@@ -25,6 +24,7 @@ _client = None
 def _get_razorpay():
     global _client
     if _client is None and _RAZORPAY_KEY_ID and _RAZORPAY_KEY_SECRET:
+        import razorpay
         _client = razorpay.Client(auth=(_RAZORPAY_KEY_ID, _RAZORPAY_KEY_SECRET))
     return _client
 
