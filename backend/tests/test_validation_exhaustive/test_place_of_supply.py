@@ -1,6 +1,5 @@
 """Validation rules: place of supply, interstate vs intrastate routing."""
 
-import pytest
 from validation_layer import validate_invoice_for_xml
 from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType, GSTType
 from gst_engine import determine_gst_type, _extract_state_code, _compute_gstin_checksum

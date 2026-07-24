@@ -19,17 +19,12 @@ from core.metrics import metrics
 from core.sentry import init_sentry, capture_exception
 from audit_log import audit as audit_logger
 
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from api.app_state import limiter
 
 import database as db
 import validation as val
 from core.logging import get_logger
-from config.settings import (
-    config_overrides, user_config_from_current,
-    make_xml_generator, run_validation_pipeline,
-)
 from api.app_state import (
     extraction_pipeline, company_config, learner,
     queue_manager, ai_cache, MAX_CONCURRENT_EXTRACTIONS,
@@ -37,20 +32,13 @@ from api.app_state import (
 from background import run_extraction_worker, run_cleanup_loop
 from api.extraction import router as extraction_router
 from api.health import router as health_router
-from api.gst import router as gst_router
-from api.system import router as system_router
 from api.clients import router as clients_router
 from api.corrections import router as corrections_router
 from api.rules_engine import router as rules_engine_router
-from api.companies import router as companies_router
-from api.auth import router as auth_router
-from api.gstr import router as gstr_router
-from api.preflight import router as preflight_router
-from api.voucher import router as voucher_router
+from auth import router as auth_router
 from api.config import router as config_router
 from api.banking import router as banking_router
 from api.admin import router as admin_router
-from api.metrics import router as metrics_router
 from api.learning import router as learning_router
 from api.invoices import router as invoice_router
 from api.tally_sync import router as tally_sync_router
@@ -196,7 +184,23 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # -- Rate limiting --
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """Return 429 as JSON with retry-after seconds so clients can retry gracefully."""
+    retry_after = getattr(exc, "retry_after", None) or 60
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "rate_limit_exceeded",
+            "message": f"Rate limit exceeded. Retry after {retry_after} seconds.",
+            "retry_after": retry_after,
+        },
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 
 _RAW_ORIGINS = os.getenv("ALLOWED_ORIGINS",
     "https://invosync-wheat.vercel.app,http://localhost:3000,http://localhost:5173,https://invosync.vercel.app,https://invosync.in"
@@ -298,26 +302,22 @@ val.COMPANY_STATE_CODE = company_config.state_code
 # Domain routers
 app.include_router(extraction_router)
 app.include_router(health_router)
-app.include_router(gst_router)
-app.include_router(system_router)
 app.include_router(clients_router)
 app.include_router(corrections_router)
 app.include_router(rules_engine_router)
-app.include_router(companies_router)
 app.include_router(auth_router)
-app.include_router(gstr_router)
-app.include_router(preflight_router)
-app.include_router(voucher_router)
 app.include_router(config_router)
 app.include_router(banking_router)
 app.include_router(admin_router)
-app.include_router(metrics_router)
 app.include_router(learning_router)
 app.include_router(invoice_router)
 app.include_router(tally_sync_router)
 app.include_router(ledgers_router)
 app.include_router(reports_router)
 app.include_router(billing_router)
+
+from api.compliance import router as compliance_router
+app.include_router(compliance_router)
 
 # Seed default plans on startup (idempotent)
 # (moved to lifespan below)

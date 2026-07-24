@@ -7,11 +7,10 @@ mandatory fields, line items, TDS, freight, round-off, and more.
 
 import re
 from datetime import date, datetime
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional
+from decimal import Decimal
 
 from schemas import (
-    StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry, ALLOWED_GST_SLABS,
+    StandardizedInvoice, VoucherType, GSTType, ALLOWED_GST_SLABS,
 )
 from validators.base import ValidationResult, ValidationScore
 
@@ -215,7 +214,7 @@ class AccountingValidator:
             if has_igst:
                 result.add_error("intra_igst", f"Intra-state (code {vendor_code}): IGST not allowed. Use CGST+SGST.", category="gst")
             if not has_cgst_sgst and not has_igst and has_taxes:
-                result.add_error("intra_no_cgst_sgst", f"Intra-state: expected CGST+SGST, got none.", category="gst")
+                result.add_error("intra_no_cgst_sgst", "Intra-state: expected CGST+SGST, got none.", category="gst")
             result.add_info(f"GST routing: intra-state CGST+SGST (code {vendor_code})", category="gst")
 
         # Inter-state (different codes) — IGST required, CGST/SGST forbidden
@@ -223,7 +222,7 @@ class AccountingValidator:
             if has_cgst_sgst:
                 result.add_error("inter_cgst_sgst", f"Inter-state ({vendor_code}→{buyer_code}): CGST/SGST not allowed. Use IGST.", category="gst")
             if not has_igst and has_taxes:
-                result.add_warning(f"Inter-state detected but no IGST entries", category="gst")
+                result.add_warning("Inter-state detected but no IGST entries", category="gst")
             result.add_info(f"GST routing: inter-state IGST ({vendor_code}→{buyer_code})", category="gst")
 
         # LUT / Composition — zero tax

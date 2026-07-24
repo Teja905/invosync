@@ -1,12 +1,13 @@
 """Comprehensive test: ALL Indian purchase & sales invoice types + edge case fixes."""
 
-import os, sys, re
+import os
+import sys
+import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 from schemas import StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry, ALLOWED_GST_SLABS
 from xml_generator import TallyXmlGenerator
 from validation_layer import validate_invoice_for_xml, validate_xml_output
-from gst_engine import compute_gst_entries, compute_tax_from_items
 
 PASS = 0
 FAIL = 0

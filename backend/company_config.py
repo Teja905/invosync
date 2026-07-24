@@ -205,6 +205,10 @@ class CompanyConfig:
     def get_purchase_ledger(self, description: str = "") -> str:
         if not description:
             return self.default_purchase_ledger
+        key = description.lower().strip()
+        for pattern, ledger in self.ledger_mappings.items():
+            if pattern in key or key in pattern:
+                return ledger
         return self.default_purchase_ledger
 
     def get_sales_ledger(self) -> str:

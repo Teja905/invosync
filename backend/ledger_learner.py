@@ -11,8 +11,6 @@ Every resolution is recorded for accuracy tracking. The model gets smarter
 with each correction the CA makes.
 """
 
-import re
-from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from ledger_nlp import clean_and_tokenize, resolve_contextual_ledger_nlp
 

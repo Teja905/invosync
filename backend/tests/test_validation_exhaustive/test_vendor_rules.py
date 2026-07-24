@@ -1,6 +1,5 @@
 """Validation rules: vendor name must be present and reasonable."""
 
-import pytest
 from validation_layer import validate_invoice_for_xml
 from schemas import StandardizedInvoice, VoucherType
 

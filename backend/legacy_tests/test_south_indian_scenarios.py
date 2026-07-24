@@ -1,11 +1,12 @@
 """Real-world South Indian company invoice scenarios."""
-import os, sys, re
+import os
+import sys
+import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 from schemas import StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry
 from xml_generator import TallyXmlGenerator
 from validation_layer import validate_invoice_for_xml, has_blocking_errors
-from gst_engine import compute_tax_from_items
 from company_config import CompanyConfig
 
 PASS = 0

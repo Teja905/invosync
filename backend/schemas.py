@@ -85,6 +85,7 @@ class StandardizedInvoice(BaseModel):
     is_service: bool = False
     is_sez: bool = Field(default=False, description="True if the supplier/buyer is located in an SEZ zone")
     is_lut: bool = Field(default=False, description="True if the transaction is covered under a Letter of Undertaking (LUT)")
+    is_composition: bool = Field(default=False, description="True if the supplier is a composition taxpayer under Section 10 of the CGST Act")
     is_rcm: bool = Field(default=False, description="True if the transaction falls under Reverse Charge Mechanism (RCM)")
     original_invoice_number: Optional[str] = Field(default=None, description="The original invoice number being amended (Required for Credit/Debit Notes)")
     original_invoice_date: Optional[str] = Field(default=None, description="The original invoice date in YYYY-MM-DD format being amended")
@@ -96,6 +97,9 @@ class StandardizedInvoice(BaseModel):
     cess_amount: float = 0.0
     cess_rate: float = 0.0
     confidence: float = 0.0
+    ind_confidence: float = 1.0
+    ind_scores: Optional[dict] = None
+    ind_issues: Optional[list] = None
     _provider: str = ""
     _model: str = ""
 

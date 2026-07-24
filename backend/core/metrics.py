@@ -44,6 +44,12 @@ class _Window:
 class Metrics:
     """Singleton metrics store."""
 
+    # Approximate cost per 1K tokens (USD) — update as pricing changes
+    COST_PER_1K = {
+        "openrouter": 0.000125,   # Gemini Flash via OpenRouter ~$0.075/1M tokens
+        "gemini": 0.000075,       # Gemini Flash direct ~$0.075/1M tokens
+    }
+
     def __init__(self) -> None:
         self._start_time = time.time()
         self._requests_total = 0
@@ -56,6 +62,10 @@ class Metrics:
         self._worker_heartbeat = 0.0
         self._queue_depth = 0
         self._last_exception: str | None = None
+        self._total_tokens = 0
+        self._total_cost_usd = 0.0
+        self._tokens_by_provider: dict[str, int] = {}
+        self._cost_by_provider: dict[str, float] = {}
 
     # -- Mutators --
     def record_request(self, status_code: int) -> None:
@@ -88,6 +98,18 @@ class Metrics:
     def record_exception(self, exc: Exception) -> None:
         self._last_exception = f"{type(exc).__name__}: {exc}"
 
+    def record_ai_usage(self, provider: str, usage: dict) -> None:
+        """Record token usage and estimated cost for an AI extraction call."""
+        tokens = usage.get("total_tokens", 0) or usage.get("completion_tokens", 0) or 0
+        if tokens <= 0:
+            return
+        self._total_tokens += tokens
+        cost_per_1k = self.COST_PER_1K.get(provider, 0.0001)
+        cost = (tokens / 1000.0) * cost_per_1k
+        self._total_cost_usd += cost
+        self._tokens_by_provider[provider] = self._tokens_by_provider.get(provider, 0) + tokens
+        self._cost_by_provider[provider] = self._cost_by_provider.get(provider, 0.0) + cost
+
     # -- Snapshot --
     def snapshot(self) -> dict:
         uptime = time.time() - self._start_time
@@ -108,6 +130,10 @@ class Metrics:
             ),
             "worker_alive": heartbeat_age is None or heartbeat_age < 120,
             "last_exception": self._last_exception,
+            "total_tokens": self._total_tokens,
+            "total_cost_usd": round(self._total_cost_usd, 6),
+            "tokens_by_provider": dict(self._tokens_by_provider),
+            "cost_by_provider": {k: round(v, 6) for k, v in self._cost_by_provider.items()},
         }
 
     def _rate(self, timestamps: Deque[float]) -> float:
@@ -151,6 +177,12 @@ class Metrics:
             "# HELP invosync_worker_alive Background worker liveness.",
             "# TYPE invosync_worker_alive gauge",
             f"invosync_worker_alive {1 if s['worker_alive'] else 0}",
+            "# HELP invosync_total_tokens Total AI tokens consumed.",
+            "# TYPE invosync_total_tokens counter",
+            f"invosync_total_tokens {s['total_tokens']}",
+            "# HELP invosync_total_cost_usd Estimated AI cost in USD.",
+            "# TYPE invosync_total_cost_usd counter",
+            f"invosync_total_cost_usd {s['total_cost_usd']}",
         ]
         return "\n".join(lines) + "\n"
 

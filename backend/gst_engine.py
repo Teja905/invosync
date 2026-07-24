@@ -107,7 +107,8 @@ def validate_gstin(gstin: str) -> dict:
     if not _validate_pan(pan):
         return {"valid": False, "message": f"PAN '{pan}' in GSTIN is invalid — OCR may have misread, please verify"}
     if not _verify_gstin_checksum(gstin):
-        return {"valid": False, "message": f"Checksum failed — OCR may have misread '{gstin}', please verify"}
+        expected_cd = _compute_gstin_checksum(gstin[:-1])
+        return {"valid": False, "message": f"Checksum failed — expected check digit '{expected_cd}' but found '{check_digit}'. OCR may have misread '{gstin}', please verify"}
     return {
         "valid": True,
         "message": "GSTIN is valid",
@@ -154,11 +155,15 @@ def determine_gst_type(
     company_state_code: str = "27",
     is_sez: bool = False,
     is_lut: bool = False,
+    is_composition: bool = False,
 ) -> tuple[GSTType, bool]:
     # Rule 1: LUT — zero-rated supply, exempt from GST
     if is_lut:
         return GSTType.EXEMPT, False
-    # Rule 2: SEZ — deemed inter-state regardless of state codes
+    # Rule 2: Composition supplier — cannot collect GST, flat turnover tax
+    if is_composition:
+        return GSTType.EXEMPT, False
+    # Rule 3: SEZ — deemed inter-state regardless of state codes
     if is_sez:
         return GSTType.IGST, True
     vendor_code = _extract_state_code(vendor_gstin)

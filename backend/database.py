@@ -13,7 +13,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import AutoReconnect, ConnectionFailure
 from bson.objectid import ObjectId
 
-from crypto_utils import encrypt, decrypt
 
 
 def calculate_file_hash(file_bytes: bytes) -> str:
@@ -23,7 +22,9 @@ def calculate_file_hash(file_bytes: bytes) -> str:
 logger = logging.getLogger("invosync.database")
 
 
-async def execute_db_write_with_retry(async_func, *args, max_retries: int = 3, **kwargs):
+async def execute_db_write_with_retry(async_func, *args, max_retries: int = 3, session=None, **kwargs):
+    if session is not None:
+        kwargs["session"] = session
     delay = 0.5
     for attempt in range(1, max_retries + 1):
         try:
@@ -54,6 +55,8 @@ subscriptions = None
 plans = None
 client_users = None
 ai_cache = None
+tally_snapshots = None
+compliance_tasks = None
 
 # Sentinel value to detect uninitialized collections
 _NOT_INITIALIZED = "database not connected — call connect() first"
@@ -74,7 +77,7 @@ def require_connected():
 
 
 async def connect():
-    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies, audit_logs, journal_lines, ledger_types, subscriptions, plans, client_users, ai_cache
+    global _client, _db, invoices, counters, users, clients, banking_rules, organizations, companies, audit_logs, journal_lines, ledger_types, subscriptions, plans, client_users, ai_cache, tally_snapshots, compliance_tasks
     uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     # Bounded connection pool so 1000+ concurrent users don't exhaust sockets.
     _client = AsyncIOMotorClient(
@@ -99,6 +102,8 @@ async def connect():
     plans = _db.plans
     client_users = _db.client_users
     ai_cache = _db.ai_cache
+    tally_snapshots = _db.tally_snapshots
+    compliance_tasks = _db.compliance_tasks
 
     # Seed counters
     for cname in ("invoice_id", "client_id", "company_id"):
@@ -189,6 +194,16 @@ async def _create_indexes():
         await ai_cache.create_index(
             [("cached_at", 1)], expireAfterSeconds=604800, name="idx_cache_ttl",
         )
+        # Tally snapshots — store Tally TB data pushed by connector
+        await tally_snapshots.create_index(
+            [("user_id", 1), ("company_id", 1), ("created_at", -1)],
+            name="idx_tally_snap_user_company",
+        )
+        # Compliance tasks — calendar tracking per user/client
+        await compliance_tasks.create_index(
+            [("user_id", 1), ("fy_start", 1), ("client_id", 1), ("due_date", 1)],
+            name="idx_compliance_calendar",
+        )
     except Exception as e:
         logger.warning("Index creation warning (non-fatal): %s", e)
 
@@ -261,6 +276,89 @@ async def save_correction_memory(email: str, description: str, ledger: str):
 async def get_correction_memory(email: str) -> dict:
     user = await users.find_one({"email": email.lower().strip()}, {"correction_memory": 1})
     return (user or {}).get("correction_memory") or {}
+
+
+# ---------------------------------------------------------------------------
+# Vendor Ledger Mappings (auto-learn from user choices)
+# ---------------------------------------------------------------------------
+
+async def save_vendor_ledger_mapping(user_id: str, vendor_name: str, ledger_name: str, gstin: str = ""):
+    """Save a vendor→ledger mapping for auto-suggest."""
+    key = vendor_name.lower().strip()
+    if not key:
+        return
+    normalized = _normalize_vendor_name(vendor_name)
+    await execute_db_write_with_retry(
+        users.update_one,
+        {"email": user_id.lower().strip()},
+        {"$set": {
+            f"vendor_ledger_map.{key}.ledger": ledger_name,
+            f"vendor_ledger_map.{key}.normalized": normalized,
+            f"vendor_ledger_map.{key}.gstin": gstin.upper().strip() if gstin else "",
+            f"vendor_ledger_map.{key}.last_used": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+
+async def get_vendor_ledger_mapping(user_id: str, vendor_name: str) -> Optional[str]:
+    """Look up saved ledger for a vendor name (normalized match)."""
+    user = await users.find_one({"email": user_id.lower().strip()}, {"vendor_ledger_map": 1})
+    vlm = (user or {}).get("vendor_ledger_map") or {}
+
+    # 1. Exact match
+    key = vendor_name.lower().strip()
+    if key in vlm:
+        entry = vlm[key]
+        return entry.get("ledger") if isinstance(entry, dict) else entry
+
+    # 2. Normalized match
+    norm = _normalize_vendor_name(vendor_name)
+    for k, entry in vlm.items():
+        if isinstance(entry, dict) and entry.get("normalized") == norm:
+            return entry.get("ledger")
+    return None
+
+
+async def get_vendor_ledger_by_gstin(user_id: str, gstin: str) -> Optional[str]:
+    """Look up saved ledger by GSTIN (most reliable match)."""
+    gstin = gstin.upper().strip()
+    if not gstin or len(gstin) != 15:
+        return None
+    user = await users.find_one({"email": user_id.lower().strip()}, {"vendor_ledger_map": 1})
+    vlm = (user or {}).get("vendor_ledger_map") or {}
+    for k, entry in vlm.items():
+        if isinstance(entry, dict) and entry.get("gstin") == gstin:
+            return entry.get("ledger")
+    return None
+
+
+async def get_all_vendor_ledger_mappings(user_id: str) -> dict:
+    """Return all saved vendor→ledger mappings for a user."""
+    user = await users.find_one({"email": user_id.lower().strip()}, {"vendor_ledger_map": 1})
+    return (user or {}).get("vendor_ledger_map") or {}
+
+
+async def delete_vendor_ledger_mapping(user_id: str, vendor_name: str):
+    """Remove a vendor→ledger mapping."""
+    key = vendor_name.lower().strip()
+    if not key:
+        return
+    await execute_db_write_with_retry(
+        users.update_one,
+        {"email": user_id.lower().strip()},
+        {"$unset": {f"vendor_ledger_map.{key}": ""}},
+    )
+
+
+def _normalize_vendor_name(name: str) -> str:
+    """Normalize vendor name for fuzzy matching. Handles suffixes, punctuation, case."""
+    import re as _re
+    name = (name or "").lower().strip()
+    for suffix in ["pvt. ltd.", "pvt ltd", "private limited", "pvt", "ltd", "co.", "inc.", "llc", "llp", "limited", "corp"]:
+        name = name.replace(suffix, "")
+    name = _re.sub(r"[^a-z0-9\s]", " ", name)
+    name = " ".join(name.split())
+    return name.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -457,9 +555,9 @@ async def insert_invoice(
     return doc["display_id"], result.inserted_id
 
 
-async def update_invoice(display_id: int, updates: dict):
+async def update_invoice(display_id: int, updates: dict, session=None):
     await execute_db_write_with_retry(
-        invoices.update_one, {"display_id": display_id}, {"$set": updates}
+        invoices.update_one, {"display_id": display_id}, {"$set": updates}, session=session
     )
 
 
@@ -523,8 +621,10 @@ async def find_by_file_hash(file_hash: str, user_id: str = None) -> Optional[dic
     return await invoices.find_one(query)
 
 
-async def find_duplicate(vendor: str, inv_no: str, user_id: str = None) -> Optional[dict]:
-    """FIX: escape regex metacharacters to prevent ReDoS injection."""
+async def find_duplicate(vendor: str, inv_no: str, user_id: str = None, date: str = None) -> Optional[dict]:
+    """FIX: escape regex metacharacters to prevent ReDoS injection.
+    When date is provided, also matches on invoice date for semantic dedup.
+    """
     if not vendor or not inv_no:
         return None
     safe_vendor = re.escape(vendor.strip())
@@ -535,6 +635,8 @@ async def find_duplicate(vendor: str, inv_no: str, user_id: str = None) -> Optio
     }
     if user_id:
         query["user_id"] = user_id
+    if date:
+        query["extracted.invoice_date"] = date
     return await invoices.find_one(query)
 
 
@@ -676,7 +778,7 @@ async def get_last_audit_event(resource_type: str, resource_id: str, action: str
 # Journal Lines (derived ledger legs — single source of truth for reporting)
 # ---------------------------------------------------------------------------
 
-async def replace_journal_lines(invoice_id: str, lines: list) -> None:
+async def replace_journal_lines(invoice_id: str, lines: list, session=None) -> None:
     """Replace all journal lines for an invoice with the freshly generated legs.
 
     Idempotent: re-generating XML for the same invoice overwrites the legs so
@@ -685,7 +787,7 @@ async def replace_journal_lines(invoice_id: str, lines: list) -> None:
     if journal_lines is None:
         return
     await execute_db_write_with_retry(
-        journal_lines.delete_many, {"invoice_id": invoice_id}
+        journal_lines.delete_many, {"invoice_id": invoice_id}, session=session
     )
     if not lines:
         return
@@ -706,7 +808,7 @@ async def replace_journal_lines(invoice_id: str, lines: list) -> None:
             "reversed": False,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-    await execute_db_write_with_retry(journal_lines.insert_many, docs)
+    await execute_db_write_with_retry(journal_lines.insert_many, docs, session=session)
 
 
 async def list_journal_lines(invoice_id: str = None, company_id: str = None,
@@ -759,7 +861,7 @@ async def set_journal_line_reversed(invoice_id: str, reversed: bool = True) -> i
 # ---------------------------------------------------------------------------
 
 async def upsert_ledger_type(company_id: str, ledger: str, account_type: str,
-                             parent_group: str = None) -> None:
+                             parent_group: str = None, session=None) -> None:
     """Store/refresh the account-type mapping for a ledger under a company."""
     if ledger_types is None:
         return
@@ -774,6 +876,7 @@ async def upsert_ledger_type(company_id: str, ledger: str, account_type: str,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }},
         upsert=True,
+        session=session,
     )
 
 
@@ -788,6 +891,36 @@ async def list_ledger_types(company_id: str) -> list:
         return []
     cursor = ledger_types.find({"company_id": company_id}, max_time_ms=10000)
     return await cursor.to_list(length=500)
+
+
+# ---------------------------------------------------------------------------
+# Tally Snapshots — 2-way sync: connector pushes TB data from Tally
+# ---------------------------------------------------------------------------
+
+async def store_tally_snapshot(user_id: str, company_id: str, rows: list, source: str = "connector") -> str:
+    """Store a Tally trial balance snapshot pushed by the connector."""
+    if tally_snapshots is None:
+        return ""
+    doc = {
+        "user_id": user_id,
+        "company_id": company_id,
+        "source": source,
+        "rows": rows,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await execute_db_write_with_retry(tally_snapshots.insert_one, doc)
+    return str(result.inserted_id)
+
+
+async def get_latest_tally_snapshot(user_id: str, company_id: str) -> Optional[dict]:
+    """Get the most recent Tally TB snapshot for comparison."""
+    if tally_snapshots is None:
+        return None
+    return await tally_snapshots.find_one(
+        {"user_id": user_id, "company_id": company_id},
+        sort=[("created_at", -1)],
+        max_time_ms=5000,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -923,3 +1056,37 @@ async def get_client_users_for_ca(user_id: str) -> list[dict]:
         return []
     cursor = client_users.find({"user_id": user_id}, max_time_ms=5000)
     return await cursor.to_list(length=1000)
+
+
+# ---------------------------------------------------------------------------
+# Transaction helper
+# ---------------------------------------------------------------------------
+
+async def run_in_transaction(operations: list, client: AsyncIOMotorClient = None):
+    """Run a list of coroutine callables in a MongoDB transaction.
+
+    Each operation should accept a single ``session`` argument (use ``functools.partial``).
+    If the server does not support transactions (standalone, no replica set), falls
+    back to sequential execution with ``session=None`` so dev environments continue
+    to work without replica-set configuration.
+    """
+    if client is None:
+        client = _client
+    if client is None:
+        raise RuntimeError("MongoDB client not initialised")
+    try:
+        session = await client.start_session()
+        try:
+            async with session.start_transaction():
+                for op in operations:
+                    await op(session)
+                await session.commit_transaction()
+        finally:
+            await session.end_session()
+    except Exception as e:
+        err = str(e).lower()
+        if any(hint in err for hint in ("replica set", "not master", "transaction", "requires a replica")):
+            for op in operations:
+                await op(None)
+        else:
+            raise

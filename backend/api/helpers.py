@@ -1,13 +1,12 @@
 """Shared route helpers: legacy conversion, duplicate check, config utils."""
 
-import os
 from typing import Optional
 
 from company_config import CompanyConfig
 from config.settings import config_overrides, user_config_from_current, make_xml_generator
 from core.logging import get_logger
 from gst_engine import determine_gst_type, compute_tax_from_items
-from ocr_postproc import fix_gstin, fix_date, fix_amount, clean_extracted_invoice_payload
+from ocr_postproc import fix_gstin, fix_date
 from schemas import StandardizedInvoice, LineItem, VoucherType
 from voucher_classifier import classify_voucher_type, classify_service_vs_goods
 
@@ -22,7 +21,13 @@ def legacy_to_standard(data: dict, provider: str = "", model: str = "", cfg: Opt
     company_state = cfg.state_code
     company_gstin = cfg.company_gstin
     buyer_gstin = data.get("buyer_gstin") or company_gstin or ""
-    gst_type, is_interstate = determine_gst_type(gstin, buyer_gstin, company_state)
+    is_sez = bool(data.get("is_sez", False))
+    is_lut = bool(data.get("is_lut", False))
+    is_composition = bool(data.get("is_composition", False))
+    gst_type, is_interstate = determine_gst_type(
+        gstin, buyer_gstin, company_state,
+        is_sez=is_sez, is_lut=is_lut, is_composition=is_composition,
+    )
 
     line_items = []
     for item in data.get("line_items", []):
@@ -79,6 +84,9 @@ def legacy_to_standard(data: dict, provider: str = "", model: str = "", cfg: Opt
         is_rcm=is_rcm,
         is_interstate=is_interstate,
         is_service=classify_service_vs_goods([li.model_dump() for li in line_items]),
+        is_sez=is_sez,
+        is_lut=is_lut,
+        is_composition=is_composition,
         confidence=float(data.get("confidence", 0) or 0),
         voucher_type=voucher_type,
         auto_create_stock_items=bool(data.get("auto_create_stock_items", False)),
@@ -87,11 +95,11 @@ def legacy_to_standard(data: dict, provider: str = "", model: str = "", cfg: Opt
     )
 
 
-async def check_duplicate(vendor: str, inv_no: str, total: float, user_id: str = None) -> Optional[str]:
+async def check_duplicate(vendor: str, inv_no: str, total: float, user_id: str = None, date: str = None) -> Optional[str]:
     if db.invoices is None or not vendor or not inv_no:
         return None
     try:
-        dup = await db.find_duplicate(vendor, inv_no, user_id)
+        dup = await db.find_duplicate(vendor, inv_no, user_id, date=date)
         if not dup:
             return None
         existing_amt = dup.get("extracted", {}).get("total_amount")

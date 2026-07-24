@@ -1,6 +1,5 @@
 """Tests for gstr_preview.py."""
 
-import pytest
 from schemas import StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry
 from gstr_preview import GSTRPreviewGenerator, generate_gstr_preview
 

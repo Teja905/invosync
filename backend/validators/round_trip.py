@@ -7,9 +7,8 @@ into a structure that matches the original invoice data.
 import re
 from dataclasses import dataclass, field
 from typing import Optional
-from decimal import Decimal
 
-from schemas import StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry
+from schemas import StandardizedInvoice, VoucherType
 from validators.base import ValidationResult, ValidationScore
 
 

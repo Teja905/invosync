@@ -10,14 +10,12 @@ Covers:
 - High-volume retail (Tamil Nadu, Karnataka)
 """
 
-import pytest
 from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType
 from xml_generator import TallyXmlGenerator
 from company_config import CompanyConfig
-from gst_engine import _compute_gstin_checksum, determine_gst_type, validate_tax_structure
 from validation_layer import validate_invoice_for_xml
 from validators.tally_simulator import TallySimulator
-from voucher_classifier import classify_voucher_type, classify_service_vs_goods
+from voucher_classifier import classify_voucher_type
 from ocr_postproc import fix_gstin, fix_date, clean_extracted_invoice_payload
 
 

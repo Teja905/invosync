@@ -9,11 +9,11 @@ from company_config import CompanyConfig
 from ledger_mapping import LedgerMappingEngine
 from rules_engine import RulesEngine
 from schemas import (
-    StandardizedInvoice, VoucherType, GSTType, DocumentClass,
-    LineItem, TaxEntry,
+    StandardizedInvoice, VoucherType, DocumentClass,
 )
-from gst_engine import validate_gstin, determine_gst_type, validate_tax_structure, get_valid_slabs_for_date
-from voucher_classifier import classify_document_detailed, classify_voucher_type
+from gst_engine import validate_gstin, validate_tax_structure, get_valid_slabs_for_date
+from voucher_classifier import classify_document_detailed
+from tds_engine import detect_tds_applicability, validate_tds_deduction
 
 _config = CompanyConfig()
 _rules_engine = RulesEngine()
@@ -23,7 +23,7 @@ _ledger_engine = LedgerMappingEngine(_config, _rules_engine)
 # Missing vendor name / total amount creates broken vouchers.
 # Unbalanced debits/credits, invalid dates, and amount math failures create wrong accounting.
 BLOCKING_CHECKS = {
-    "voucher_balance", "date",
+    "voucher_balance", "date", "hallucination_block",
 }
 
 # Check names within mandatory_fields that indicate a critical missing field.
@@ -131,7 +131,7 @@ def _pre_validate_tax_routing(inv: StandardizedInvoice, result: ValidationResult
             )
         if not has_cgst_sgst and not has_igst and inv.taxes:
             issues.append(
-                f"Intra-state supply: expected CGST + SGST entries, got none."
+                "Intra-state supply: expected CGST + SGST entries, got none."
             )
 
     # Rule 3: Inter-state (codes differ) — must use IGST, reject CGST/SGST
@@ -173,6 +173,7 @@ def validate_invoice_for_xml(inv: StandardizedInvoice) -> ValidationResult:
     result = ValidationResult()
 
     _pre_validate_tax_routing(inv, result)
+    _check_hallucination(inv, result)
     _check_mandatory_fields(inv, result)
     _check_voucher_balance(inv, result)
     _check_gstin(inv, result)
@@ -186,6 +187,9 @@ def validate_invoice_for_xml(inv: StandardizedInvoice) -> ValidationResult:
     _check_expense_classification(inv, result)
     _list_referenced_ledgers(inv, result)
     _check_adjustment_note_linkage(inv, result)
+    _check_tds_compliance(inv, result)
+    _check_duplicate_invoice_number(inv, result)
+    _check_hsn_sac_codes(inv, result)
 
     return result
 
@@ -217,9 +221,44 @@ def _check_mandatory_fields(inv: StandardizedInvoice, result: ValidationResult):
         result.add_check("mandatory_fields", True, "All mandatory fields present")
 
 
+def _check_hallucination(inv: StandardizedInvoice, result: ValidationResult):
+    """Hard-block XML generation if independent confidence is critically low.
+
+    Independent confidence is computed by hallucination_guard.py without
+    trusting the AI's self-assessment. If it's below 0.40, the extraction
+    cannot be trusted and XML generation is blocked even with force=true.
+    """
+    ind_conf = getattr(inv, "ind_confidence", 1.0) or 1.0
+    if ind_conf >= 1.0:
+        return  # Legacy/test data without independent scoring
+    if ind_conf < 0.40:
+        result.add_check(
+            "hallucination_block", False,
+            f"AI extraction critically unreliable (independent confidence: {ind_conf:.0%}). "
+            f"The extracted data has mathematical errors or impossible field values. "
+            f"Re-upload the invoice or enter data manually. Cannot generate XML.",
+        )
+    elif ind_conf < 0.70:
+        result.add_check(
+            "hallucination_attention", False,
+            f"AI extraction needs review (independent confidence: {ind_conf:.0%}). "
+            f"Every field must be verified before XML generation.",
+        )
+    else:
+        result.add_check("hallucination", True, f"Extraction quality acceptable ({ind_conf:.0%})")
+
+
 def _check_voucher_balance(inv: StandardizedInvoice, result: ValidationResult):
+    import math
     issues = []
     voucher_type = inv.voucher_type.value if inv.voucher_type else ""
+
+    # Guard against NaN/Inf amounts — these crash Decimal conversion
+    for field_name in ("total_amount", "total_taxable_value", "total_tax", "freight", "round_off", "tds_amount"):
+        val = getattr(inv, field_name, 0) or 0
+        if math.isnan(val) or math.isinf(val):
+            result.add_check("voucher_balance", False, f"Invalid {field_name}: {val} — cannot compute balance")
+            return
 
     # Credit/Debit notes can have negative totals
     if voucher_type not in ("Credit Note", "Debit Note"):
@@ -340,11 +379,8 @@ def _check_tax_rates(inv: StandardizedInvoice, result: ValidationResult):
                     f"Invalid GST rate {r}% for '{item.description}' (date: {inv.invoice_date or 'N/A'}). "
                     f"Allowed for this date: {sorted(valid_slabs_for_date)}",
                 )
-    if rates_seen and not result.checks.get("tax_rates", {}).get("pass", True):
-        pass
-    else:
-        if "tax_rates" not in result.checks:
-            result.add_check("tax_rates", True, "All tax rates valid")
+    if "tax_rates" not in result.checks:
+        result.add_check("tax_rates", True, "All tax rates valid")
 
 
 def _check_gst_structure(inv: StandardizedInvoice, result: ValidationResult):
@@ -358,6 +394,12 @@ def _check_gst_structure(inv: StandardizedInvoice, result: ValidationResult):
 
 
 def _check_amount_math(inv: StandardizedInvoice, result: ValidationResult):
+    import math
+    # Guard against NaN/Inf — Decimal conversion crashes on these
+    for val in (inv.total_taxable_value, inv.total_tax, inv.total_amount, inv.freight, inv.round_off, inv.tds_amount):
+        if math.isnan(val) or math.isinf(val):
+            result.add_check("amount_math", False, f"Invalid amount value detected: {val}")
+            return
     if inv.line_items:
         calc_taxable = sum(item.taxable_value for item in inv.line_items)
         if abs(calc_taxable - inv.total_taxable_value) > 0.10:
@@ -583,6 +625,9 @@ def validate_xml_output(xml_str: str) -> ValidationResult:
         year = int(d[:4])
         month = int(d[4:6])
         day = int(d[6:8])
+        if year < 2017 or year > 2030:
+            result.add_check("xml_date", False, f"Suspicious year {year} in XML date {d} — GST era is 2017+")
+            break
         if month < 1 or month > 12:
             result.add_check("xml_date", False, f"Invalid XML date: month {month} in {d}")
             break
@@ -602,6 +647,141 @@ def _check_adjustment_note_linkage(inv: StandardizedInvoice, result: ValidationR
             f"Voucher type '{inv.voucher_type.value}' requires an original_invoice_number "
             f"linking to the invoice being amended. Without this, Tally cannot reconcile the adjustment."
         )
+
+
+def _check_tds_compliance(inv: StandardizedInvoice, result: ValidationResult) -> None:
+    """Check TDS compliance for applicable expense categories.
+
+    Detects if TDS should have been deducted based on item descriptions,
+    and validates the TDS amount if already specified.
+    """
+    if inv.voucher_type != VoucherType.PURCHASE:
+        return
+
+    tds_sections_found = []
+    for item in inv.line_items:
+        desc = item.description or ""
+        if not desc:
+            continue
+        detections = detect_tds_applicability(
+            description=desc,
+            amount=item.taxable_value,
+            is_service=item.is_service,
+        )
+        for det in detections:
+            if det.is_applicable and det.confidence > 0.5:
+                tds_sections_found.append(det)
+
+    if not tds_sections_found:
+        return
+
+    # Check if TDS was actually deducted — soft warning, not blocking error
+    if inv.tds_amount <= 0 and tds_sections_found:
+        best = tds_sections_found[0]
+        expected_tds = Decimal(str(inv.total_taxable_value)) * Decimal(str(best.rate)) / Decimal("100")
+        expected_tds = expected_tds.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if expected_tds > Decimal("500"):  # Only flag significant amounts
+            result.add_warning(
+                f"TDS may be applicable under Section {best.section} ({best.description}) "
+                f"at {best.rate}% — estimated Rs.{float(expected_tds):,.0f}. "
+                f"CA should verify if TDS was deducted and add tds_amount if applicable.",
+            )
+
+    # Validate existing TDS deduction
+    if inv.tds_amount > 0 and tds_sections_found:
+        best = tds_sections_found[0]
+        tds_result = validate_tds_deduction(
+            tds_section=best.section,
+            tds_amount=inv.tds_amount,
+            payment_amount=inv.total_taxable_value,
+            rate=inv.tds_rate if inv.tds_rate > 0 else best.rate,
+            vendor_gstin=inv.vendor_gstin,
+        )
+        for err in tds_result.errors:
+            result.add_check("tds_calculation", False, err)
+        for warn in tds_result.warnings:
+            result.add_warning(warn)
+
+
+def _check_duplicate_invoice_number(inv: StandardizedInvoice, result: ValidationResult) -> None:
+    """Warn if invoice number looks like a duplicate pattern."""
+    inv_num = (inv.invoice_number or "").strip()
+    if not inv_num:
+        return
+    # Check for suspicious patterns
+    if re.match(r"^(inv|bill| receipt)[-_]?\d{1,3}$", inv_num, re.IGNORECASE):
+        result.add_warning(
+            f"Invoice number '{inv_num}' looks very short. "
+            f"Verify this is the complete invoice number."
+        )
+    if inv_num in ("0", "000", "0000", "1", "001", "0001"):
+        result.add_warning(
+            f"Invoice number '{inv_num}' appears to be a placeholder. "
+            f"Verify the actual invoice number."
+        )
+
+
+# Standard HSN/SAC code lengths and patterns for Indian GST
+_HSN_4_DIGIT = re.compile(r"^\d{4}$")
+_HSN_6_DIGIT = re.compile(r"^\d{6}$")
+_HSN_8_DIGIT = re.compile(r"^\d{8}$")
+_SAC_PATTERN = re.compile(r"^\d{4,6}$")
+
+
+def _check_hsn_sac_codes(inv: StandardizedInvoice, result: ValidationResult) -> None:
+    """Validate HSN/SAC codes on line items.
+
+    HSN codes must be:
+    - 4 digits for turnover up to Rs.5 crore
+    - 6 digits for turnover Rs.5-10 crore
+    - 8 digits for turnover > Rs.10 crore
+
+    SAC codes are typically 4-6 digits.
+    Also cross-checks HSN → expected GST rate against invoice tax rate.
+    """
+    from hsn_rate_map import verify_hsn_rate
+
+    for i, item in enumerate(inv.line_items):
+        code = (item.hsn_sac or "").strip()
+        if not code:
+            result.add_warning(
+                f"Line item {i+1} ('{item.description}') missing HSN/SAC code. "
+                f"Required for GST returns."
+            )
+            continue
+
+        # Clean common OCR artifacts
+        code_clean = code.replace(" ", "").replace("-", "").upper()
+
+        if item.is_service:
+            # SAC codes are 4-6 digits
+            if not _SAC_PATTERN.match(code_clean):
+                result.add_check(
+                    f"line_item_{i}_hsn", False,
+                    f"Line item {i+1} ('{item.description}'): SAC code '{code}' "
+                    f"invalid. SAC codes should be 4-6 digits.",
+                )
+        else:
+            # HSN codes: 4, 6, or 8 digits
+            if not (_HSN_4_DIGIT.match(code_clean) or _HSN_6_DIGIT.match(code_clean) or _HSN_8_DIGIT.match(code_clean)):
+                result.add_check(
+                    f"line_item_{i}_hsn", False,
+                    f"Line item {i+1} ('{item.description}'): HSN code '{code}' "
+                    f"invalid. HSN codes should be 4, 6, or 8 digits.",
+                )
+            elif len(code_clean) < 4:
+                result.add_warning(
+                    f"Line item {i+1} ('{item.description}'): HSN code '{code}' "
+                    f"has only {len(code_clean)} digits. Minimum 4 digits required."
+                )
+
+        # Cross-check HSN → expected GST rate
+        if item.tax_rate > 0 and code_clean and code_clean.isdigit():
+            verification = verify_hsn_rate(code_clean, item.tax_rate)
+            if not verification["valid"]:
+                result.add_warning(
+                    f"Line item {i+1} ('{item.description}'): {verification['message']}"
+                )
 
 
 def verify_unbreakable_double_entry_balance(items: list, header_total: float, header_taxable: float) -> bool:

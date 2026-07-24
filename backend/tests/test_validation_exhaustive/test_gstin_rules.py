@@ -1,6 +1,5 @@
 """Validation rules: GSTIN format, checksum, and state code validation."""
 
-import pytest
 from validation_layer import validate_invoice_for_xml
 from schemas import StandardizedInvoice, VoucherType
 from gst_engine import _compute_gstin_checksum, validate_gstin

@@ -19,3 +19,4 @@ tally-connector/**/*.dll
 tally-connector/**/*.pdb
 tally-connector/**/bin/
 tally-connector/**/obj/
+*.tar.gz

@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from rules_engine import RulesEngine, MatchResult, MatchType, LedgerRule
+from rules_engine import RulesEngine, MatchType, LedgerRule
 
 
 # Amount threshold above which a capital-looking item is treated as Fixed Asset

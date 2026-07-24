@@ -5,8 +5,7 @@ Runs on every XML generation automatically as part of the pipeline.
 """
 
 import re
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from validators.base import ValidationResult, ValidationScore
 
@@ -228,7 +227,13 @@ class TallySimulator:
                 year = int(d[:4])
                 month = int(d[4:6])
                 day = int(d[6:8])
-                if 1 <= month <= 12 and 1 <= day <= 31:
+                if year < 2017 or year > 2030:
+                    result.add_error(
+                        "date_format",
+                        f"Date '{d}' has suspicious year {year} — GST era is 2017+",
+                        category="tally",
+                    )
+                elif 1 <= month <= 12 and 1 <= day <= 31:
                     result.add_info(f"Date format valid: {d}", category="tally")
                 else:
                     result.add_error(
@@ -249,11 +254,11 @@ class TallySimulator:
         result.passed = fails == 0
         if fails > 0:
             result.add_info(
-                f"Tally simulation: {fails} issues that would cause import failure",
+                f"Tally simulation: {passes} checks passed, {fails} issues that would cause import failure",
                 category="tally",
             )
         else:
-            result.add_info("Tally simulation: XML ready for import", category="tally")
+            result.add_info(f"Tally simulation: all {passes} checks passed — XML ready for import", category="tally")
 
         return result
 

@@ -3,23 +3,21 @@
 Exercises all 7 voucher types through: generation → validation → parse-back → compare.
 """
 
-import os
 import sys
 import tempfile
 import shutil
 from pathlib import Path
-from decimal import Decimal
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType, GSTType
+from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType
 from xml_generator import TallyXmlGenerator
 from company_config import CompanyConfig
 from gst_engine import _compute_gstin_checksum
 from validators.xml_validator import XMLValidator
-from validators.round_trip import RoundTripValidator, ParsedVoucher
+from validators.round_trip import RoundTripValidator
 from validators.accounting_validator import AccountingValidator
 from validators.base import ValidationResult, ValidationScore, ValidationCheck
 

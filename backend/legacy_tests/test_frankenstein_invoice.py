@@ -12,7 +12,7 @@ os.environ["COMPANY_NAME"] = "InvoSync Test Co"
 
 from schemas import StandardizedInvoice, VoucherType, DocumentClass, GSTType, LineItem, TaxEntry
 from validation_layer import validate_invoice_for_xml
-from xml_generator import TallyXmlGenerator, safe_xml_string
+from xml_generator import TallyXmlGenerator
 from company_config import CompanyConfig
 
 
@@ -66,8 +66,8 @@ def main():
     print(f"\n Vendor: {vendor_name}")
     print(f" Vendor GSTIN: {vendor_gstin} (Ladakh, 37)")
     print(f" Buyer GSTIN:  {buyer_gstin} (Ladakh, 37)")
-    print(f" SEZ: True (forces IGST despite same state)")
-    print(f" RCM: True (legal fee 18% -> RCM isolation)")
+    print(" SEZ: True (forces IGST despite same state)")
+    print(" RCM: True (legal fee 18% -> RCM isolation)")
     print()
 
     inv = StandardizedInvoice(

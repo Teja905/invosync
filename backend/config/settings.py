@@ -2,7 +2,7 @@
 
 import os
 
-from crypto_utils import encrypt, decrypt
+from crypto_utils import decrypt
 from company_config import CompanyConfig
 from xml_generator import TallyXmlGenerator
 from schemas import StandardizedInvoice

@@ -4,8 +4,7 @@ import re
 import sys
 from schemas import StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry
 from xml_generator import TallyXmlGenerator
-from validation_layer import validate_invoice_for_xml, validate_xml_output
-from gst_engine import compute_gst_entries
+from validation_layer import validate_invoice_for_xml
 
 PASS = 0
 FAIL = 0
@@ -200,7 +199,7 @@ print("\n" + "=" * 60)
 print("BALANCE AUDIT: INVO SYNC (invosync/)")
 print("=" * 60)
 
-import sys, os
+import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
     from invosync.models import InvoiceRequest, LineItem as InvLineItem

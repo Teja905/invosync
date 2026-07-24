@@ -1,86 +1,90 @@
-"""JWT authentication — token creation, verification, refresh.
+"""JWT helpers — single source of truth is backend/auth.py.
 
-Kept simple: no user database, uses a single admin credential from env vars.
+This module previously used a separate JWT_SECRET_KEY + hardcoded admin123 path,
+which split secrets from the real multi-user auth system. All callers should
+import from `auth` (backend/auth.py). This file re-exports for backward compat.
 """
 
-import hashlib
-import os
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from __future__ import annotations
 
-import jwt
+import os
+from typing import Optional
 
 from core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Env‑based config
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-change-in-production")
-REFRESH_SECRET_KEY = os.getenv("JWT_REFRESH_SECRET", "dev-refresh-secret-change-in-production")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_EXPIRE_MINUTES", "15"))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_EXPIRE_DAYS", "7"))
+# Re-export from the real auth module so secrets never diverge
+try:
+    from auth import (
+        JWT_SECRET as SECRET_KEY,
+        create_jwt,
+        create_refresh_token,
+        decode_jwt,
+        JWT_EXPIRY_HOURS,
+        REFRESH_EXPIRY_DAYS,
+    )
+except Exception:
+    # Fallback only during very early import / tests without full app
+    import secrets as _secrets
+    SECRET_KEY = os.getenv("JWT_SECRET") or _secrets.token_urlsafe(64)
+    create_jwt = None  # type: ignore
+    create_refresh_token = None  # type: ignore
+    decode_jwt = None  # type: ignore
+    JWT_EXPIRY_HOURS = 24
+    REFRESH_EXPIRY_DAYS = 30
 
-# Single admin credential (set in production env)
+# Refresh uses same secret as access (type claim distinguishes them)
+REFRESH_SECRET_KEY = SECRET_KEY
+ACCESS_TOKEN_EXPIRE_MINUTES = JWT_EXPIRY_HOURS * 60
+REFRESH_TOKEN_EXPIRE_DAYS = REFRESH_EXPIRY_DAYS
+
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@invosync.com")
-_ADMIN_PASSWORD_HASH = None
-
-
-def _get_admin_password_hash() -> str:
-    global _ADMIN_PASSWORD_HASH
-    if _ADMIN_PASSWORD_HASH is None:
-        pw = os.getenv("ADMIN_PASSWORD", "admin123")
-        _ADMIN_PASSWORD_HASH = hashlib.sha256(pw.encode()).hexdigest()
-    return _ADMIN_PASSWORD_HASH
 
 
 def verify_password(plain: str) -> bool:
-    return hashlib.sha256(plain.encode()).hexdigest() == _get_admin_password_hash()
+    """Legacy single-admin check — prefer multi-user auth.py login."""
+    import hashlib
+    pw = os.getenv("ADMIN_PASSWORD", "")
+    if not pw:
+        logger.warning("ADMIN_PASSWORD not set — legacy verify_password always fails")
+        return False
+    return hashlib.sha256(plain.encode()).hexdigest() == hashlib.sha256(pw.encode()).hexdigest()
 
 
 def create_tokens(email: str) -> dict:
-    now = datetime.now(timezone.utc)
-    access_token = jwt.encode(
-        {
-            "sub": email,
-            "iat": now,
-            "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-        },
-        SECRET_KEY,
-        algorithm="HS256",
-    )
-    refresh_token = jwt.encode(
-        {
-            "sub": email,
-            "iat": now,
-            "exp": now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-        },
-        REFRESH_SECRET_KEY,
-        algorithm="HS256",
-    )
-    return {"token": access_token, "refresh_token": refresh_token, "email": email}
+    """Create access + refresh pair using the unified auth secret."""
+    if create_jwt is None or create_refresh_token is None:
+        raise RuntimeError("auth module not available")
+    user_id = email  # legacy path has no DB id
+    return {
+        "token": create_jwt(email, user_id),
+        "refresh_token": create_refresh_token(email, user_id),
+        "email": email,
+    }
 
 
 def verify_access_token(token: str) -> Optional[str]:
-    """Return the email (subject) if valid, ``None`` otherwise."""
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        return payload.get("sub")
-    except jwt.ExpiredSignatureError:
-        logger.debug("Access token expired")
+    """Return email if access token is valid."""
+    if decode_jwt is None:
         return None
-    except jwt.InvalidTokenError as e:
-        logger.debug("Invalid access token: %s", e)
+    try:
+        payload = decode_jwt(token)
+        if payload.get("type") == "refresh":
+            return None
+        return payload.get("email")
+    except Exception:
         return None
 
 
 def verify_refresh_token(token: str) -> Optional[str]:
-    """Return the email if the refresh token is valid, ``None`` otherwise."""
-    try:
-        payload = jwt.decode(token, REFRESH_SECRET_KEY, algorithms=["HS256"])
-        return payload.get("sub")
-    except jwt.ExpiredSignatureError:
-        logger.debug("Refresh token expired")
+    """Return email if refresh token is valid."""
+    if decode_jwt is None:
         return None
-    except jwt.InvalidTokenError as e:
-        logger.debug("Invalid refresh token: %s", e)
+    try:
+        payload = decode_jwt(token)
+        if payload.get("type") != "refresh":
+            return None
+        return payload.get("email")
+    except Exception:
         return None

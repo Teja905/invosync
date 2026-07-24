@@ -331,6 +331,15 @@ public class PollingService : BackgroundService
 
     private async Task ProcessQueueAsync(CancellationToken ct)
     {
+        // Mutual exclusion: only one queue drain at a time (prevents Suvit-style stuck double-sync)
+        if (!await _watchdog.TryStartAsync())
+        {
+            _log.LogInformation("Sync already running — deferring queue drain");
+            return;
+        }
+
+        try
+        {
         while (_queue.Pending > 0 && !ct.IsCancellationRequested)
         {
             var job = await _queue.DequeueAsync(ct);
@@ -485,6 +494,11 @@ public class PollingService : BackgroundService
                     _queue.Enqueue(job);
                 }
             }
+        }
+        }
+        finally
+        {
+            _watchdog.CompleteSync();
         }
     }
 

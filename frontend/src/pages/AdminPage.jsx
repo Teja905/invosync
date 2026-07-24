@@ -1,11 +1,14 @@
 import { useState, useEffect } from "react";
+import { Link, Navigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import BACKEND from "../api/client";
 
 export default function AdminPage() {
-  const { getAuthHeaders } = useAuth();
+  const { getAuthHeaders, user } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  if (user && user.role !== "admin") return <Navigate to="/extract" replace />;
 
   useEffect(() => {
     fetch(`${BACKEND}/auth/admin/users`, { headers: getAuthHeaders() })
@@ -16,7 +19,10 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-4 animate-fadeInUp">
-      <h2 className="text-lg font-bold premium-gradient-text">Users ({users.length})</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-bold premium-gradient-text">Users ({users.length})</h2>
+        <Link to="/admin/burn" className="premium-btn-primary text-sm py-1.5 px-3">API Burn Dashboard</Link>
+      </div>
       <div className="premium-card-flat overflow-hidden">
         <table className="w-full text-sm">
           <thead><tr className="border-b border-white/5 text-left text-xs text-gray-500 uppercase">

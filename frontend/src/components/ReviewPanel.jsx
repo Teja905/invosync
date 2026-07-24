@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import BACKEND from "../api/client";
 import COMMON_LEDGERS from "../constants/ledgers";
 import Field from "./Field";
@@ -18,6 +18,66 @@ export default function ReviewPanel({
   const [mastersPreview, setMastersPreview] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewWarnings, setPreviewWarnings] = useState([]);
+  const [vendorLedgerMap, setVendorLedgerMap] = useState({});
+  const [autoMapped, setAutoMapped] = useState(false);
+  const lastVendorRef = useRef("");
+
+  // Day 2: Auto-ledger mapping — load vendor→ledger mappings on mount
+  useEffect(() => {
+    fetch(`${BACKEND}/api/v3/learning/vendor-map`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((d) => setVendorLedgerMap(d.mappings || {}))
+      .catch(() => {});
+  }, []);
+
+  // Day 2: Auto-fill ledgers when vendor name changes (normalized + GSTIN match)
+  useEffect(() => {
+    const vendor = (form.vendor_name || "").trim().toLowerCase();
+    const gstin = (form.gstin || "").trim().toUpperCase();
+    if (!vendor && !gstin) return;
+    if (vendor === lastVendorRef.current) return;
+    lastVendorRef.current = vendor;
+
+    if (autoMapped) return;
+
+    // Priority 1: GSTIN match (most reliable)
+    if (gstin && gstin.length === 15) {
+      fetch(`${BACKEND}/api/v3/learning/vendor-map-by-gstin/${gstin}`, { headers: getAuthHeaders() })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.found && d.ledger_name) {
+            const items = form.line_items || [];
+            if (items.length > 0) setLedgers(items.map(() => d.ledger_name));
+            setAutoMapped(true);
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    // Priority 2: Normalized name match
+    const savedLedger = vendorLedgerMap[vendor];
+    if (savedLedger) {
+      const items = form.line_items || [];
+      if (items.length > 0) {
+        setLedgers(items.map(() => typeof savedLedger === "object" ? savedLedger.ledger : savedLedger));
+        setAutoMapped(true);
+      }
+    }
+  }, [form.vendor_name, form.gstin, vendorLedgerMap]);
+
+  // Day 2: Save vendor→ledger mapping when user picks a ledger (with GSTIN)
+  const saveVendorLedger = useCallback(async (vendorName, ledgerName, gstin) => {
+    if (!vendorName || !ledgerName) return;
+    try {
+      await fetch(`${BACKEND}/api/v3/learning/vendor-map`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ vendor_name: vendorName, ledger_name: ledgerName, gstin: gstin || "" }),
+      });
+      setVendorLedgerMap((prev) => ({ ...prev, [vendorName.trim().toLowerCase()]: ledgerName }));
+    } catch {}
+  }, [getAuthHeaders]);
 
   useEffect(() => {
     setShowMastersPreview(false);
@@ -131,6 +191,22 @@ export default function ReviewPanel({
                 {(form.confidence * 100).toFixed(1)}%
               </span>
             </div>
+            {form.ind_confidence != null && (
+              <div className="flex items-center gap-2 text-sm mt-2">
+                <span className="text-gray-400">Independent:</span>
+                <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden max-w-[200px]">
+                  <div className="h-full rounded-full transition-all duration-500" style={{
+                    width: `${Math.min(form.ind_confidence * 100, 100)}%`,
+                    background: form.ind_confidence >= 0.7 ? "linear-gradient(90deg, #22c55e, #4ade80)"
+                      : form.ind_confidence >= 0.4 ? "linear-gradient(90deg, #eab308, #facc15)"
+                      : "linear-gradient(90deg, #ef4444, #f87171)"
+                  }} />
+                </div>
+                <span className={`font-semibold text-xs ${form.ind_confidence >= 0.7 ? "text-green-400" : form.ind_confidence >= 0.4 ? "text-yellow-400" : "text-red-400"}`}>
+                  {(form.ind_confidence * 100).toFixed(1)}%
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -414,6 +490,9 @@ export default function ReviewPanel({
                         const l = [...ledgers];
                         l[i] = e.target.value;
                         setLedgers(l);
+                        if (e.target.value && form.vendor_name) {
+                          saveVendorLedger(form.vendor_name, e.target.value, form.gstin);
+                        }
                       }}
                     >
                       <option value="">-- Select ledger --</option>

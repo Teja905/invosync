@@ -18,7 +18,8 @@ logger = logging.getLogger("invosync.auth")
 
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGO = "HS256"
-JWT_EXPIRY_HOURS = 72
+JWT_EXPIRY_HOURS = 24  # Access token: 24 hours
+REFRESH_EXPIRY_DAYS = 30  # Refresh token: 30 days
 
 if not JWT_SECRET:
     JWT_SECRET = secrets.token_urlsafe(64)
@@ -49,6 +50,7 @@ class ProfileUpdate(BaseModel):
     company_name: str = ""
     company_gstin: str = ""
     company_state_code: str = ""
+    user_type: str = ""  # "ca_firm" or "msme" — determines UI and features
     correction_memory: Optional[dict] = None
     purchase_ledger: str = ""
     sales_ledger: str = ""
@@ -87,6 +89,18 @@ def create_jwt(email: str, user_id: str) -> str:
         "user_id": user_id,
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.now(timezone.utc),
+        "type": "access",
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+def create_refresh_token(email: str, user_id: str) -> str:
+    payload = {
+        "email": email,
+        "user_id": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=REFRESH_EXPIRY_DAYS),
+        "iat": datetime.now(timezone.utc),
+        "type": "refresh",
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
 
@@ -105,6 +119,9 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
         raise HTTPException(401, "Missing or invalid authorization header")
     token = authorization.split(" ", 1)[1]
     jwt_data = decode_jwt(token)
+    # Refresh tokens must only hit /auth/refresh
+    if jwt_data.get("type") == "refresh":
+        raise HTTPException(401, "Refresh token cannot be used as access token")
     # Enrich with stored user data (company config etc.) when DB is available
     if db.users is not None:
         try:
@@ -113,6 +130,8 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
                 for key, val in user.items():
                     if key not in ("_id", "password_hash"):
                         jwt_data[key] = val
+                if "user_id" not in jwt_data and user.get("_id") is not None:
+                    jwt_data["user_id"] = str(user["_id"])
         except Exception:
             pass
     return jwt_data
@@ -126,7 +145,7 @@ async def get_admin_user(current_user: dict = Depends(get_current_user)) -> dict
 
 
 _COMPANY_FIELDS = [
-    "company_name", "company_gstin", "company_state_code",
+    "company_name", "company_gstin", "company_state_code", "user_type",
     "purchase_ledger", "sales_ledger", "bank_ledger",
     "tds_ledger", "round_off_ledger", "freight_ledger", "suspense_ledger",
     "sundry_creditors_group", "sundry_debtors_group",
@@ -168,6 +187,7 @@ async def signup(req: SignupRequest):
         user_obj[f] = ""
     return {
         "token": token,
+        "refresh_token": create_refresh_token(email, str(user["_id"])),
         "user": user_obj,
     }
 
@@ -188,6 +208,7 @@ async def login(req: LoginRequest):
 
     await db.update_user_login(email)
     token = create_jwt(email, str(user["_id"]))
+    refresh = create_refresh_token(email, str(user["_id"]))
     await audit_logger.log_auth("login", email, True, details=f"user_id={user['_id']}")
 
     user_obj = {
@@ -199,8 +220,32 @@ async def login(req: LoginRequest):
         user_obj[f] = user.get(f, "")
     return {
         "token": token,
+        "refresh_token": refresh,
         "user": user_obj,
     }
+
+
+@router.post("/refresh")
+async def refresh_token(authorization: str = Header(None)):
+    """Refresh an expired access token using a valid refresh token."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing or invalid authorization header")
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Refresh token expired — please log in again")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid refresh token")
+
+    if payload.get("type") != "refresh":
+        raise HTTPException(401, "Token is not a refresh token")
+
+    email = payload.get("email", "")
+    user_id = payload.get("user_id", "")
+    new_access = create_jwt(email, user_id)
+    new_refresh = create_refresh_token(email, user_id)
+    return {"token": new_access, "refresh_token": new_refresh}
 
 
 @router.get("/me")

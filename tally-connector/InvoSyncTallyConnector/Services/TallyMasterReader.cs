@@ -247,8 +247,8 @@ public class TallyMasterReader
     }
 
     private static string EscapeXml(string s) =>
-        s.Replace("&", "&")
-         .Replace("<", "<")
-         .Replace(">", ">")
-         .Replace('"', '"');
+        s.Replace("&", "&amp;")
+         .Replace("<", "&lt;")
+         .Replace(">", "&gt;")
+         .Replace("\"", "&quot;");
 }

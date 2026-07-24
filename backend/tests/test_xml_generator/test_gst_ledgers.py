@@ -1,7 +1,6 @@
 """XML generator: GST ledger routing correctness — CGST/SGST vs IGST."""
 
 import re
-import pytest
 from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType, GSTType
 from gst_engine import _compute_gstin_checksum
 

@@ -3,7 +3,6 @@
 import sys
 import os
 import re
-import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.dirname(__file__))
 
 from schemas import (

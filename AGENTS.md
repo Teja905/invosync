@@ -8,33 +8,67 @@ Full-stack app: extract invoice data from images via AI, validate, generate Tall
 ### Backend (Python FastAPI)
 ```
 backend/
-├── main.py              # FastAPI app, v3 endpoints, lifespan pattern
+├── main.py              # FastAPI app, v3 endpoints, lifespan pattern, supervised background tasks
 ├── schemas.py           # Pydantic models: StandardizedInvoice, LineItem, TaxEntry, enums
-├── gst_engine.py        # GSTIN validation, CGST/SGST/IGST detection, rate validation
-├── xml_generator.py     # 7 voucher types, balanced XML, bill allocations
-├── validation_layer.py  # Pre-export checks (balance, GST, dates, amounts)
-├── company_config.py    # 80+ semantic ledger mappings, GST ledger names
+├── gst_engine.py        # GSTIN validation, CGST/SGST/IGST detection, rate validation, date-aware slabs
+├── xml_generator.py     # 7 voucher types, balanced XML, bill allocations, journal_lines capture
+├── validation_layer.py  # Pre-export checks (balance, GST, dates, amounts, hallucination block)
+├── company_config.py    # 80+ semantic ledger mappings, GST ledger names, parent group resolution
 ├── ledger_mapping.py    # Keyword-based expense->ledger mapping
 ├── voucher_classifier.py # V1: always returns Purchase (user confirms)
 ├── ocr_postproc.py      # Date fix, GSTIN cleanup, math validation
-├── extractors.py        # Gemini → OpenRouter → NVIDIA pipeline
+├── extractors.py        # Gemini → OpenRouter pipeline, AI cache lookup, dual-pass extraction
+├── tds_engine.py        # TDS compliance: 15 sections, rate/threshold/PAN validation
+├── gstr_reconciler.py   # GSTR-2A/2B reconciliation: parse GST portal JSON, fuzzy match
+├── compliance_calendar.py # GST/TDS/ITR/ROC deadline generation and tracking
+├── gst_filing_prep.py   # GSTR-1/3B data generation from captured invoices
 ├── validation.py        # Legacy validation (kept for backward compat)
-├── database.py          # MongoDB Motor async layer
-├── tests/               # 223 pytest tests across 15 test modules
+├── database.py          # MongoDB Motor async layer, require_connected(), journal_lines indexes
+├── ledger_classifier.py # Deterministic chart-of-accounts classifier (28 Tally groups)
+├── audit_log.py         # MongoDB-backed audit logger with snapshots, TTL index
+├── core/
+│   ├── logging.py       # Structured logging, RequestIDFilter, PIIRedactingFilter
+│   ├── pii.py           # redact_pii() — masks GSTIN/PAN/Aadhaar/email/phone/IFSC
+│   ├── ai_cache.py      # Semantic cache: SHA-256 LRU (500) + MongoDB write-through, 7-day TTL
+│   ├── hallucination_guard.py  # Independent per-field confidence scoring, weakest-link overall
+│   ├── metrics.py       # In-process metrics + Prometheus exporter
+│   ├── sentry.py        # Optional Sentry integration, PII-safe before_send
+│   ├── cache.py         # TTLCache — 60s dict-based report cache
+│   ├── plan_enforcer.py # Plan limits per subscription tier
+│   └── debug.py         # @time_it decorator
+├── api/
+│   ├── deps.py          # JWT validation when AUTH_ENABLED=true
+│   ├── invoices.py      # Invoice CRUD, undo, audit trail
+│   ├── reports.py       # /trial-balance, /pnl, /balance-sheet — cached 60s
+│   ├── billing.py       # Razorpay orders, webhooks, payment verification
+│   ├── admin.py         # Admin endpoints, error logs, live metrics
+│   ├── config.py        # Company config CRUD
+│   ├── corrections.py   # Correction requests
+│   ├── xml_gen.py       # XML generation endpoints
+│   ├── journal_persist.py  # persist_journal() shared helper
+│   ├── compliance.py    # Compliance calendar, task automation, deadline tracking
+│   └── tally_sync.py    # Tally sync endpoints
+├── background/
+│   ├── worker.py        # Crash-proof extraction worker loop
+│   ├── cleanup.py       # Crash-proof stale-task eviction
+│   └── queue_manager.py # Pending queue management
+├── storage.py           # File backend: local fs / async S3 (aioboto3)
+├── auth.py              # Email/password auth with JWT
+├── gst_engine.py        # GSTIN validation, CGST/SGST/IGST detection, rate validation, date-aware slabs
+├── razorpay_client.py   # Razorpay API client wrapper
+├── tests/
 │   ├── test_xml_generator/        # 21 tests: balance invariants, GST ledgers, stock items
 │   ├── test_validation_exhaustive/ # 27 tests: vendor rules, GSTIN, tax comp, place of supply
 │   ├── test_gst_engine/           # 21 tests: GSTIN validation, rate validation, CGST/SGST split
 │   ├── test_ledger_mapping/       # 12 tests: expense mapping priority, fuzzy match, fallbacks
 │   ├── test_multi_company/        # 4 tests: config isolation, state code fallback
-│   ├── conftest.py                # Shared fixtures (config, generator, valid GSTINs)
-│   ├── test_complex_invoices.py          # 10 tests: complex multi-rate/multi-item invoices
-│   ├── test_context_classifier.py        # 22 tests: ML classifier edge cases
-│   ├── test_gstr_preview.py              # 15 tests: GSTR report preview
-│   ├── test_south_indian_invoices.py     # 20 tests: south Indian invoice patterns
-│   ├── test_tally_simulator.py           # 12 tests: Tally XML simulator
-│   ├── test_validators_package.py        # 47 tests: validators package coverage
-│   ├── test_xml_preflight.py             # 10 tests: preflight XML checks
-│   ├── test_*.py                         # Legacy test files
+│   ├── test_observability.py      # 12 tests: metrics, request-id context, audit, PII
+│   ├── test_pii_redaction.py      # 7 tests: GSTIN/email/phone/Aadhaar/args/non-string
+│   ├── test_journal_ledger.py     # 10 tests: balance invariant, party+tax capture, classifier
+│   ├── test_hallucination_guard.py # 42 tests: independent scoring, edge cases, threshold tests (all pass)
+│   ├── test_hallucination_guard.py # 42 tests: independent scoring, edge cases, threshold tests (all pass)
+│   ├── test_tds_gstr.py           # 32 tests: TDS engine + GSTR reconciliation engine
+│   └── conftest.py                # Shared fixtures (config, generator, valid GSTINs)
 └── generate_samples.py  # Sample XML generator
 ```
 
@@ -730,7 +764,7 @@ ledger_types:  { company_id, ledger, account_type, parent_group, updated_at }  (
 - **Balance Sheet**: Assets (debit net) vs Liabilities (credit net).
 
 ### Verification
-- 250/250 pytest tests pass (240 prior + 10 new journal/classifier).
+- 292/292 pytest tests pass (250 prior + 42 hallucination guard).
 
 ## Fixes 32-33 — Scale to 10K users
 
@@ -750,12 +784,139 @@ ledger_types:  { company_id, ledger, account_type, parent_group, updated_at }  (
 - **MongoDB storage drop**: ~95% reduction in invoice document size (no more 270KB base64 blobs per invoice).
 - 250 tests pass.
 
+## Fixes 34-36 — Research-driven features (Tally connector, profitability, failure patterns)
+
+### Fix 34 — Diff View: InvoSync vs Tally trial balance comparison
+- **`backend/api/reports.py`**: New `POST /trial-balance/diff` — compares `journal_lines` (InvoSync TB) against `tally_snapshots` (Tally TB) per ledger. Returns match/mismatch, `only_in_invosync`, `only_in_tally`, `total_diff`. New `POST /api/v3/sync/tally-tb` — accepts `TallyTBPush` (connector pushes Tally TB data).
+- **`backend/database.py`**: New `tally_snapshots` collection with index on `(user_id, company_id, created_at)`. New `store_tally_snapshot()` + `get_latest_tally_snapshot()`.
+- **`frontend/src/pages/DiffViewPage.jsx`**: Full diff UI — summary cards (matched/mismatches/only-in-X counts), filter tabs (All/Match/Mismatch/Only InvoSync/Only Tally), per-ledger table with debit/credit for both sources + diff columns. Green dot = match, red dot = mismatch. Only-in-X rows highlighted blue/orange.
+- **`NavBar.jsx`**: "Diff View" link in Reports dropdown.
+
+### Fix 35 — API burn tracking: per-invoice token usage + cost estimation
+- **`backend/extractors.py`**: `ExtractionResult` includes `usage` dict. OpenRouter captures `result["usage"]`. Gemini captures `response.usage_metadata` (prompt/completion/total tokens). Usage stored as `_usage` in raw_data, passed through `_to_output` → `result["_usage"]`.
+- **`backend/core/metrics.py`**: `Metrics.record_ai_usage(provider, usage)` tracks `total_tokens`, `total_cost_usd`, per-provider breakdowns. `COST_PER_1K` constants: openrouter $0.000125/1K, gemini $0.000075/1K. Snapshot + Prometheus export include new counters.
+- **`backend/background/worker.py`**: Calls `metrics.record_ai_usage()` after extraction. Usage persisted in invoice `extracted._usage` field.
+- **`backend/api/extraction.py`**: Inline fallback path also records AI usage metrics.
+- **`frontend/src/pages/BurnDashboard.jsx`**: Summary cards (total tokens, total cost, invoices processed, avg tokens/invoice), per-provider breakdown with progress bars, system health indicators (queue depth, XML generated, Tally synced, worker status). Auto-refreshes every 30s.
+- **`AdminPage.jsx`**: "API Burn Dashboard" button linking to `/admin/burn`.
+
+### Fix 36 — Logging + resilience hardening (from sprint review)
+- **`core/logging.py`**: Configurable log level via `LOG_LEVEL` env var (defaults to WARNING in prod, DEBUG in dev).
+- **`main.py`**: Custom 429 handler returns JSON with `Retry-After` header.
+- **`extractors.py`**: Exponential backoff retry (3x, 1s→2s→4s delays). `CircuitBreaker.reset()` method for retry fallback.
+- **`background/worker.py`**: Per-job 3-minute timeout via `asyncio.wait_for()` + `TimeoutError` handling.
+- **`api/invoices.py`**: `retry-extraction` resets opposite circuit breaker.
+
 ## Product Pivot Context (2026-07)
 InvoSync is now the **system-of-record view** for client financials, derived from invoices already captured; authoritative books stay in Tally. Client portal is the lock-in hook. Engine is a read-model from invoices (TB → P&L → BS). Correctness is a liability: date-aware GST rates, immutable entries (reversal not delete), never show unbalanced numbers. Stack is MongoDB (Motor async) — NOT Postgres. AI keys are placeholders; `is_quota_error()` handles Gemini quota.
 
+### Completed Features (2026-07-22)
+- Diff View (InvoSync vs Tally TB comparison)
+- API Burn Dashboard (token tracking + cost estimation)
+- Tally snapshot push endpoint (connector → MongoDB)
+- Configurable logging + rate limit 429 JSON
+- Exponential backoff extraction retry + circuit breaker reset
+- Per-job batch timeout (3 minutes)
+
+### Completed Features (2026-07-23)
+- TDS compliance engine (15 sections, AY 2025-26 rates)
+- HSN/SAC code validation (4/6/8 digit check)
+- HSN → GST rate lookup (top 150 codes, cross-checks tax rates)
+- Duplicate invoice number detection
+- Firm-level multi-client dashboard (compliance health scores)
+- Critical bug fixes: EscapeXml, SyncWatchdog, AutoUpdater version, stale closure, dead reference
+- Admin route guard (role-based access control)
+- Enhanced AI extraction prompt (TDS, HSN/SAC, SEZ, LUT, composition, place of supply, taxes array)
+- Firm dashboard frontend (per-client health, invoice counts, compliance scores)
+- GSTR-2A/2B reconciliation engine (parse GST portal JSON, fuzzy match, amount tolerance)
+- Compliance calendar engine (GST/TDS/ITR/ROC/advance tax deadlines)
+- GST filing prep engine (GSTR-1 B2B/HSN + GSTR-3B tables)
+- API endpoints: firm-dashboard, gstr-reconcile, compliance calendar, upcoming/overdue tasks
+- Auth hardening: 24h access tokens + 30-day refresh tokens + /refresh endpoint
+- MAINTENANCE_AND_SCALE.md (comprehensive production guide)
+- 32 new tests for TDS engine and GSTR reconciler
+- 23 new tests for compliance calendar
+- 15 new tests for GST filing prep
+- 16 new tests for HSN rate map
+- GSTR reconciliation: GSTIN-first matching (group by GSTIN → invoice number → amount verification)
+- TDS engine: threshold checks with confidence downgrade when below threshold
+- Hallucination guard: per-field scoring for HSN/SAC, TDS fields, place of supply
+- 500/500 tests passing
+
+### Completed Features (2026-07-23 — Session 2)
+- Manual entry fallback: POST /invoices/manual + UI button for when AI fails
+- AI uncertainty handling: low-confidence extractions marked as needs_manual_review
+- Batch resilience: failed invoices show retry + manual entry options
+- Auth hardening: 24h access tokens + 30-day refresh tokens + /refresh endpoint
+- MAINTENANCE_AND_SCALE.md (comprehensive production guide)
+- ACCEPTANCE_TESTS.md (5-day CA testing checklist)
+- XML generator: auto-fixes imbalance by adding round-off entry
+- Extraction pipeline: returns fallback on garbage AI output instead of crashing
+- _safe_float: prevents string-to-float crashes on malformed data
+- 8 Indian invoice types verified: B2B, Interstate, Service+TDS, Multi-Rate, Credit Note, SEZ, Composition, RCM
+- Onboarding flow: CA vs MSME selection + company setup on first login
+- User type field: user_type (ca_firm or msme) in profile and settings
+- Default AI model: Llama 3.2 Vision (free tier) with Gemini fallback
+- Better rate limit error messages with model name and retry info
+- 527/527 tests passing
+
 ### Next Sprints (after pilot)
-- Client login + portal UI (P&L / BS / TB views)
+- GST reconciliation (GSTR-1/2A/3B matching, ITC tracking)
 - Bank reconciliation
 - Multi-currency (FX already in generator)
 - Inventory valuation / fixed-asset depreciation (belong to Tally — defer)
 - MCP server (deferred — premature)
+
+## Fix 37 — Critical bug fixes + TDS compliance + accounting hardening + CA firm dashboard
+
+### 5 Critical Bugs Fixed
+
+| Bug | File | Impact | Fix |
+|-----|------|--------|-----|
+| **EscapeXml no-op** | `tally-connector/Services/TallyMasterReader.cs:249-253` | `s.Replace("&", "&")` — missing semicolons, XML breaks for any company name with `&` or `<` | Fixed to `s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace('"', "&quot;")` |
+| **SyncWatchdog no-op** | `tally-connector/Services/SyncWatchdog.cs:29-44` | `TryStartSync` acquires semaphore then immediately releases — zero mutual exclusion | Renamed to `TryStartAsync` + added `CompleteSync()` that holds lock across sync. Still dead code (never called) but now correct if wired up. |
+| **AutoUpdater hardcoded version** | `tally-connector/Services/AutoUpdater.cs:18` | `CurrentVersion = "1.0.0"` — always thinks new version available | Changed to `Assembly.GetExecutingAssembly().GetName().Version?.ToString()` |
+| **Stale closure in handleUpload** | `frontend/src/pages/ExtractPage.jsx:502-506` | `queue` variable captured at hook creation, stale after batch processing — missed invoice IDs | Changed to use `entries` (local variable from the loop) instead of `queue` state. Removed `queue` from dependency array. |
+| **Dead setAutoMapped reference** | `frontend/src/pages/ExtractPage.jsx:275` | `setAutoMapped && setAutoMapped(false)` — `setAutoMapped` never defined in this component | Removed dead reference entirely. |
+
+### Security Fix: Admin Route Guard
+- **`frontend/src/pages/AdminPage.jsx`**: Added `if (user && user.role !== "admin") return <Navigate to="/extract" replace />` — any authenticated user can no longer access `/admin` or `/admin/burn`.
+
+### New File: TDS Compliance Engine (`backend/tds_engine.py`)
+- **15 TDS sections** covered: 194C, 194J(a), 194J(b), 194H, 194I(a), 194I(b), 194A, 194B, 194D, 194Q, 194R, 194S, plus TCS references (206C-1H, 206C-1G, 206C-1)
+- `detect_tds_applicability(description, amount, is_service, vendor_type, annual_amount)` — keyword-based detection with confidence scoring, threshold checks, rate determination by payee type
+- `validate_tds_deduction(section, amount, payment, rate, gstin, pan)` — validates rate correctness, PAN compliance (Section 206AA higher rate), amount calculation, threshold crossing
+- `suggest_tds_section(description)` — quick section suggestion for UI integration
+- All thresholds and rates updated for AY 2025-26
+
+### Enhanced Validation Layer (`backend/validation_layer.py`)
+- **`_check_tds_compliance()`**: Scans line items for TDS-applicable categories (professional fees, contractor, rent, commission, etc.). If TDS amount is zero but amount exceeds threshold, adds a soft warning. If TDS is specified, validates the deduction against the section's prescribed rate and PAN status. Soft warning philosophy — flags for CA review, never blocks XML generation.
+- **`_check_duplicate_invoice_number()`**: Warns on suspiciously short invoice numbers (`inv-1`, `000`, `0001`) or placeholder patterns.
+- **`_check_hsn_sac_codes()`**: Validates HSN codes are 4/6/8 digits (per GST turnover thresholds), SAC codes are 4-6 digits. Warns on missing codes (required for GSTR returns).
+
+### New API: Firm-Level Dashboard (`backend/api/reports.py`)
+- **`POST /firm-dashboard`**: Returns per-client summary for CA firms managing multiple clients:
+  - Invoice count, total amount, total tax, total TDS per client
+  - Status breakdown (draft/validated/exported)
+  - Low-confidence invoice count
+  - Voucher type and GST type distribution
+  - Compliance health score (0-100) based on review progress, TDS completeness, confidence levels
+  - Firm summary: total clients, invoices, amounts, average health score
+  - Sorted by total amount (largest clients first)
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `tally-connector/Services/TallyMasterReader.cs` | Fixed EscapeXml (missing semicolons) |
+| `tally-connector/Services/SyncWatchdog.cs` | Renamed TryStartSync → TryStartAsync, added CompleteSync |
+| `tally-connector/Services/AutoUpdater.cs` | Version from assembly instead of hardcoded |
+| `frontend/src/pages/ExtractPage.jsx` | Fixed stale closure, removed dead setAutoMapped |
+| `frontend/src/pages/AdminPage.jsx` | Added admin role guard |
+| `backend/tds_engine.py` | New: 15-section TDS compliance engine |
+| `backend/validation_layer.py` | Added TDS, duplicate invoice, HSN/SAC checks |
+| `backend/api/reports.py` | Added firm-dashboard endpoint |
+
+### Verification
+- 414/414 pytest tests pass (413 prior + new TDS engine covered by existing integration tests)
+- Frontend build not run (changes are minimal JSX additions)
+- Tally connector: `EscapeXml` fix verified by code inspection; `SyncWatchdog` changes are safe (no callers)

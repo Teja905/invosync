@@ -8,11 +8,9 @@ document. This keeps MongoDB small (< 500MB) even at 10K users x 100 invoices.
 """
 
 import os
-import io
 import pathlib
 import logging
 from typing import Optional
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 

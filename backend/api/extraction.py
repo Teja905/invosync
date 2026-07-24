@@ -1,6 +1,5 @@
 """Extraction routes: upload, queue, status, batch."""
 
-import base64
 import hashlib
 import os
 import tempfile
@@ -14,7 +13,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 try:
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -123,6 +122,10 @@ async def extract(
         if db.invoices is None:
             data = await extraction_pipeline.extract(image_bytes, file.content_type, company_gstin=company_gstin)
             data = clean_extracted_invoice_payload(data)
+            usage = data.get("_usage", {})
+            if usage:
+                from core.metrics import metrics as _metrics
+                _metrics.record_ai_usage(data.get("_provider", "unknown"), usage)
             return {**data, "client_id": client_id, "_fallback": True}
 
         now_utc = datetime.now(timezone.utc).isoformat()
@@ -198,6 +201,56 @@ async def extract_status(invoice_id: str, current_user: dict = Depends(get_authe
         }
 
     return {"invoice_id": invoice_id, "processing_state": "unknown", "status": "unknown"}
+
+
+@router.post("/api/v3/extraction/batch-status")
+async def batch_extraction_status(
+    request: Request,
+    current_user: dict = Depends(get_authenticated_user),
+):
+    """Get extraction status for multiple invoices at once."""
+    body = await request.json()
+    invoice_ids = body.get("invoice_ids", [])
+    if not invoice_ids or not isinstance(invoice_ids, list):
+        raise HTTPException(400, "invoice_ids list is required")
+    if len(invoice_ids) > 500:
+        raise HTTPException(400, "Maximum 500 invoice IDs per request")
+
+    user_id = current_user.get("user_id", current_user.get("email", ""))
+    results = {}
+
+    if db.invoices is not None:
+        from bson.objectid import ObjectId as _OID
+        valid_ids = []
+        oid_map = {}
+        for raw_id in invoice_ids:
+            try:
+                oid = _OID(raw_id)
+                valid_ids.append(oid)
+                oid_map[str(oid)] = raw_id
+            except Exception:
+                results[raw_id] = {"status": "invalid_id", "processing_state": "unknown"}
+
+        if valid_ids:
+            cursor = db.invoices.find(
+                {"_id": {"$in": valid_ids}, "user_id": user_id},
+                {"status": 1, "processing_state": 1, "display_id": 1},
+            )
+            async for doc in cursor:
+                sid = str(doc["_id"])
+                raw = oid_map.get(sid, sid)
+                q_state = queue_manager.get_status(sid) or doc.get("processing_state", "unknown")
+                results[raw] = {
+                    "status": doc.get("status", "unknown"),
+                    "processing_state": q_state,
+                    "display_id": doc.get("display_id"),
+                }
+
+    for raw_id in invoice_ids:
+        if raw_id not in results:
+            results[raw_id] = {"status": "not_found", "processing_state": "unknown"}
+
+    return {"results": results}
 
 
 @router.post("/api/v3/batch/extract")

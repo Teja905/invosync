@@ -1,7 +1,5 @@
 import BACKEND from "./client";
 
-const DB_NAME = "invosync-offline";
-const STORE = "queue";
 const KEY = "invosync-offline-queue";
 
 function load() {

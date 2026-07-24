@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
 
 const BACKEND = import.meta.env.VITE_API_URL || (
   window.location.hostname === "localhost" ? "" : "https://invosync-backend-yjfa.onrender.com"
@@ -6,10 +6,15 @@ const BACKEND = import.meta.env.VITE_API_URL || (
 const AuthContext = createContext(null);
 
 const TOKEN_KEY = "invosync_token";
+const REFRESH_KEY = "invosync_refresh";
 const USER_KEY = "invosync_user";
 
 function loadToken() {
   try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+
+function loadRefreshToken() {
+  try { return localStorage.getItem(REFRESH_KEY); } catch { return null; }
 }
 
 function loadUser() {
@@ -19,16 +24,22 @@ function loadUser() {
   } catch { return null; }
 }
 
-function saveSession(token, user) {
+/**
+ * Persist session. Always pass three args: access token, refresh token (or null), user object.
+ * Never pass a user object as the refresh token — that corrupted sessions on /auth/me restore.
+ */
+function saveSession(token, refreshToken, user) {
   try {
-    localStorage.setItem(TOKEN_KEY, token);
-    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    if (refreshToken) localStorage.setItem(REFRESH_KEY, refreshToken);
+    if (user != null) localStorage.setItem(USER_KEY, JSON.stringify(user));
   } catch {}
 }
 
 function clearSession() {
   try {
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_KEY);
     localStorage.removeItem(USER_KEY);
   } catch {}
 }
@@ -37,6 +48,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => loadUser());
   const [token, setToken] = useState(() => loadToken());
   const [loading, setLoading] = useState(true);
+  const refreshInFlight = useRef(null);
 
   useEffect(() => {
     const storedToken = loadToken();
@@ -49,9 +61,37 @@ export function AuthProvider({ children }) {
       .then((data) => {
         setUser(data);
         setToken(storedToken);
-        saveSession(storedToken, data);
+        // Preserve existing refresh token; only update user profile
+        saveSession(storedToken, loadRefreshToken(), data);
       })
-      .catch(() => {
+      .catch(async () => {
+        // Access token may be expired — try refresh once before logout
+        const rt = loadRefreshToken();
+        if (rt) {
+          try {
+            const res = await fetch(`${BACKEND}/auth/refresh`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${rt}` },
+            });
+            if (res.ok) {
+              const data = await res.json();
+              const existingUser = loadUser();
+              saveSession(data.token, data.refresh_token || rt, existingUser);
+              setToken(data.token);
+              // Re-fetch profile with new token
+              const me = await fetch(`${BACKEND}/auth/me`, {
+                headers: { Authorization: `Bearer ${data.token}` },
+              });
+              if (me.ok) {
+                const profile = await me.json();
+                setUser(profile);
+                saveSession(data.token, data.refresh_token || rt, profile);
+                setLoading(false);
+                return;
+              }
+            }
+          } catch {}
+        }
         clearSession();
         setToken(null);
         setUser(null);
@@ -70,7 +110,7 @@ export function AuthProvider({ children }) {
       throw new Error(err.detail || "Login failed");
     }
     const data = await res.json();
-    saveSession(data.token, data.user);
+    saveSession(data.token, data.refresh_token, data.user);
     setToken(data.token);
     setUser(data.user);
     return data.user;
@@ -87,10 +127,38 @@ export function AuthProvider({ children }) {
       throw new Error(err.detail || "Signup failed");
     }
     const data = await res.json();
-    saveSession(data.token, data.user);
+    saveSession(data.token, data.refresh_token, data.user);
     setToken(data.token);
     setUser(data.user);
     return data.user;
+  }, []);
+
+  const refreshAccessToken = useCallback(async () => {
+    // Deduplicate concurrent refresh calls (Suvit-class session stickiness)
+    if (refreshInFlight.current) return refreshInFlight.current;
+
+    refreshInFlight.current = (async () => {
+      const rt = loadRefreshToken();
+      if (!rt) return false;
+      try {
+        const res = await fetch(`${BACKEND}/auth/refresh`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${rt}` },
+        });
+        if (!res.ok) return false;
+        const data = await res.json();
+        const currentUser = loadUser();
+        saveSession(data.token, data.refresh_token || rt, currentUser);
+        setToken(data.token);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        refreshInFlight.current = null;
+      }
+    })();
+
+    return refreshInFlight.current;
   }, []);
 
   const logout = useCallback(() => {
@@ -100,8 +168,9 @@ export function AuthProvider({ children }) {
   }, []);
 
   const getAuthHeaders = useCallback(() => {
-    if (!token) return {};
-    return { Authorization: `Bearer ${token}` };
+    const t = token || loadToken();
+    if (!t) return {};
+    return { Authorization: `Bearer ${t}` };
   }, [token]);
 
   const hasRole = useCallback((role) => {
@@ -109,16 +178,41 @@ export function AuthProvider({ children }) {
   }, [user]);
 
   const refreshUser = useCallback(async () => {
-    if (!token) return;
+    const t = token || loadToken();
+    if (!t) return;
     try {
-      const res = await fetch(`${BACKEND}/auth/me`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`${BACKEND}/auth/me`, { headers: { Authorization: `Bearer ${t}` } });
       if (res.ok) {
         const data = await res.json();
         setUser(data);
-        saveSession(token, data);
+        saveSession(t, loadRefreshToken(), data);
       }
     } catch {}
   }, [token]);
+
+  /**
+   * Authenticated fetch with automatic 401 → refresh → retry once.
+   * Use this for all API calls that need a stable CA session.
+   */
+  const authFetch = useCallback(async (path, options = {}) => {
+    const url = path.startsWith("http") ? path : `${BACKEND}${path}`;
+    const headers = {
+      ...(options.headers || {}),
+      ...getAuthHeaders(),
+    };
+    let res = await fetch(url, { ...options, headers });
+    if (res.status === 401) {
+      const ok = await refreshAccessToken();
+      if (ok) {
+        const retryHeaders = {
+          ...(options.headers || {}),
+          ...getAuthHeaders(),
+        };
+        res = await fetch(url, { ...options, headers: retryHeaders });
+      }
+    }
+    return res;
+  }, [getAuthHeaders, refreshAccessToken]);
 
   const ctx = {
     user,
@@ -131,6 +225,8 @@ export function AuthProvider({ children }) {
     getAuthHeaders,
     hasRole,
     refreshUser,
+    refreshAccessToken,
+    authFetch,
     BACKEND,
   };
 

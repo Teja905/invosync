@@ -58,7 +58,7 @@ async def receive_alert(
 
 @router.get("/api/v3/admin/alerts")
 async def list_alerts(
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, le=500),
     current_user: dict = Depends(get_authenticated_user),
 ):
     """List stored alerts for the authenticated user's organization."""

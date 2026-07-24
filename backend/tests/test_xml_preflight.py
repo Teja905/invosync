@@ -1,7 +1,6 @@
 """Tests for xml_preflight.py."""
 
-import pytest
-from xml_preflight import XMLPreFlightValidator, validate_xml_preflight
+from xml_preflight import validate_xml_preflight
 
 
 SIMPLE_PURCHASE_XML = """<?xml version="1.0" encoding="UTF-8"?>

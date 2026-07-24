@@ -6,7 +6,6 @@ from pydantic import BaseModel
 
 from api.deps import get_authenticated_user
 from api.app_state import company_config as _company_config
-from config.settings import user_config_from_current
 from core.logging import get_logger
 from xml_generator import safe_xml_string
 
@@ -43,7 +42,7 @@ async def create_ledger(
     parts.append("<ENVELOPE>")
     parts.append("<HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER>")
     parts.append("<BODY><IMPORTDATA><REQUESTDESC>")
-    parts.append(f"<REPORTNAME>All Masters</REPORTNAME>")
+    parts.append("<REPORTNAME>All Masters</REPORTNAME>")
     parts.append(f"<STATICVARIABLES><SVCURRENTCOMPANY>{company_safe}</SVCURRENTCOMPANY></STATICVARIABLES>")
     parts.append("</REQUESTDESC><REQUESTDATA>")
     parts.append("<TALLYMESSAGE>")

@@ -1,12 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
 import BACKEND from "../api/client";
 import { queuedFetch } from "../api/queue";
 import { useToast } from "../components/Toast";
+import ManualEntryModal from "../components/ManualEntryModal";
 import ConfirmDialog from "../components/ConfirmDialog";
 import UploadPanel from "../components/UploadPanel";
 import ReviewPanel from "../components/ReviewPanel";
 import ValidationModal from "../components/ValidationModal";
+import BatchReviewGrid from "../components/BatchReviewGrid";
+import { useExtract } from "../contexts/ExtractContext";
 
 const DRAFT_KEY = "invosync_draft";
 
@@ -28,8 +32,29 @@ function clearDraft() {
   try { localStorage.removeItem(DRAFT_KEY); } catch {}
 }
 
-export default function ExtractPage({ form, setForm, currentId, setCurrentId, selectedClient, setSelectedClient, ledgers, setLedgers, reviewConfirmed, setReviewConfirmed, reviewErrors, setReviewErrors }) {
+function QueueStatusChip({ status, error, onRetry }) {
+  const styles = {
+    pending: { bg: "bg-gray-500/15", text: "text-gray-400", icon: "\u25CB", label: "Queued" },
+    processing: { bg: "bg-indigo-500/15", text: "text-indigo-400", icon: "\u25B6", label: "Extracting" },
+    done: { bg: "bg-green-500/15", text: "text-green-400", icon: "\u2713", label: "Done" },
+    failed: { bg: "bg-red-500/15", text: "text-red-400", icon: "\u2717", label: "Failed" },
+    duplicate: { bg: "bg-yellow-500/15", text: "text-yellow-400", icon: "\u26A0", label: "Duplicate" },
+  };
+  const s = styles[status] || styles.pending;
+  return (
+    <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${s.bg} ${s.text}`}>
+      {status === "processing" && <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />}
+      {s.icon} {s.label}
+    </span>
+  );
+}
+
+export default function ExtractPage() {
+  const { form, setForm, currentId, setCurrentId, selectedClient, setSelectedClient, ledgers, setLedgers, reviewConfirmed, setReviewConfirmed, reviewErrors, setReviewErrors } = useExtract();
+  const { editInvoice } = useExtract();
   const { user, getAuthHeaders } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
   const toast = useToast();
   const [extracting, setExtracting] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
@@ -45,8 +70,40 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
   const [tallyLedgers, setTallyLedgers] = useState([]);
   const [queue, setQueue] = useState([]);
   const [queueIdx, setQueueIdx] = useState(-1);
+  const [batchInvoiceIds, setBatchInvoiceIds] = useState([]);
   const abortRef = useRef(null);
   const imageUrl = currentId != null ? `${BACKEND}/invoices/${currentId}/image` : null;
+
+  // Day 5: Error recovery state
+  const [recoveryInvoice, setRecoveryInvoice] = useState(null);
+  const [showManualEntry, setShowManualEntry] = useState(false);
+  const [manualForm, setManualForm] = useState({
+    vendor_name: "", invoice_number: "", date: "", total_amount: "",
+    gstin: "", gstin_valid: false,
+    taxable_amount: "", cgst: "", sgst: "", igst: "", tax_rate: "",
+    voucher_type: "Purchase",
+    line_items: [{ description: "", quantity: 1, rate: 0, taxable_value: 0, tax_rate: 0 }],
+  });
+
+  function validateGstinFormat(gstin) {
+    return /^\d{2}[A-Z]{5}\d{4}[A-Z]\d[Z][A-Z\d]$/.test(gstin);
+  }
+
+  function updateManualTaxFromRate() {
+    setManualForm((p) => {
+      const rate = parseFloat(p.tax_rate) || 0;
+      const taxable = parseFloat(p.taxable_amount || p.total_amount) || 0;
+      const tax = taxable * rate / 100;
+      const isInterstate = false;
+      return {
+        ...p,
+        taxable_amount: taxable ? String(taxable) : p.taxable_amount,
+        cgst: isInterstate ? "" : String(tax / 2),
+        sgst: isInterstate ? "" : String(tax / 2),
+        igst: isInterstate ? String(tax) : "",
+      };
+    });
+  }
 
   useEffect(() => {
     fetch(`${BACKEND}/clients`, { headers: getAuthHeaders() })
@@ -55,7 +112,6 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
       .then((r) => r.json()).then((d) => setTallyLedgers(d.ledgers || [])).catch(() => {});
   }, []);
 
-  // Auto-save draft on form changes
   const saveTimer = useRef(null);
   useEffect(() => {
     if (form.line_items?.length > 0 || form.invoice_number) {
@@ -67,7 +123,6 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [form, ledgers, currentId, selectedClient, reviewConfirmed]);
 
-  // Restore draft on mount
   const draftRestored = useRef(false);
   useEffect(() => {
     if (draftRestored.current) return;
@@ -86,6 +141,14 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
     }
     draftRestored.current = true;
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const editId = params.get("id");
+    if (!editId) return;
+    clearDraft();
+    editInvoice(editId);
+  }, [location.search, editInvoice]);
 
   const companyGstin = user?.company_gstin || "";
   const companyName = user?.company_name || "";
@@ -218,7 +281,7 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
   }
 
   function resetForm() {
-    setForm({ gstin: "", invoice_number: "", date: "", total_amount: "", vendor_name: "", vendor_address: "", buyer_gstin: "", buyer_name: "", voucher_type: "Purchase", confidence: null, line_items: [], _provider: "", _model: "" });
+    setForm({ gstin: "", invoice_number: "", date: "", total_amount: "", vendor_name: "", vendor_address: "", buyer_gstin: "", buyer_name: "", voucher_type: "Purchase", confidence: null, ind_confidence: null, line_items: [], _provider: "", _model: "" });
     setValidated(false); setErrors({}); setSuccess(false); setCurrentId(null); setValidation(null); setDupWarning(null);
     setSelectedClient("");
     setLedgers([]);
@@ -226,7 +289,151 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
     setReviewErrors(null);
   }
 
-  // ── Queue-based batch upload ──
+  // Day 5: Retry failed extraction
+  async function retryExtraction(invQueueEntry) {
+    if (!currentId) return;
+    setQueue((q) => {
+      const n = [...q];
+      const idx = n.findIndex(e => e.name === invQueueEntry.name);
+      if (idx >= 0) n[idx] = { ...n[idx], status: "processing", error: null };
+      return n;
+    });
+    try {
+      const res = await fetch(`${BACKEND}/api/v3/invoices/${currentId}/retry-extraction`, {
+        method: "POST", headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        toast.success("Re-queued for extraction");
+        pollExtractionStatus(currentId);
+      } else {
+        const body = await res.json().catch(() => ({}));
+        toast.error(body.message || "Retry failed");
+        setQueue((q) => {
+          const n = [...q];
+          const idx = n.findIndex(e => e.name === invQueueEntry.name);
+          if (idx >= 0) n[idx] = { ...n[idx], status: "failed", error: body.message || "Retry failed" };
+          return n;
+        });
+      }
+    } catch (e) {
+      toast.error("Retry error: " + e.message);
+    }
+  }
+
+  // Day 5: Manual entry for failed extraction
+  async function submitManualEntry() {
+    if (!currentId) return;
+    const taxable = parseFloat(manualForm.taxable_amount || manualForm.total_amount) || 0;
+    const cgst = parseFloat(manualForm.cgst) || 0;
+    const sgst = parseFloat(manualForm.sgst) || 0;
+    const igst = parseFloat(manualForm.igst) || 0;
+
+    const items = manualForm.line_items.map((li) => ({
+      ...li,
+      quantity: parseFloat(li.quantity) || 1,
+      rate: parseFloat(li.rate) || 0,
+      taxable_value: parseFloat(li.taxable_value) || taxable,
+      tax_rate: parseFloat(li.tax_rate || manualForm.tax_rate) || 0,
+      cgst: cgst, sgst: sgst, igst: igst,
+    }));
+
+    const payload = {
+      ...manualForm,
+      total_amount: parseFloat(manualForm.total_amount) || 0,
+      taxable_amount: taxable,
+      cgst, sgst, igst,
+      line_items: items,
+    };
+
+    try {
+      const res = await fetch(`${BACKEND}/api/v3/invoices/${currentId}/manual-entry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        toast.success("Data saved manually — invoice is now in draft");
+        setShowManualEntry(false);
+        setSuccess(true);
+        setForm({
+          vendor_name: manualForm.vendor_name, invoice_number: manualForm.invoice_number,
+          date: manualForm.date, total_amount: manualForm.total_amount,
+          gstin: manualForm.gstin, voucher_type: manualForm.voucher_type,
+          confidence: 1.0, ind_confidence: 1.0, line_items: items,
+        });
+        setLedgers(items.map(() => ""));
+        setQueue((q) => {
+          const n = [...q];
+          const idx = n.findIndex(e => e.status === "failed");
+          if (idx >= 0) n[idx] = { ...n[idx], status: "done" };
+          return n;
+        });
+      } else {
+        const body = await res.json().catch(() => ({}));
+        toast.error(body.message || "Manual entry failed");
+      }
+    } catch (e) {
+      toast.error("Manual entry error: " + e.message);
+    }
+  }
+
+  // Day 4: Poll extraction status with adaptive backoff
+  async function pollExtractionStatus(invoiceObjId) {
+    let pollCount = 0;
+    const poll = async (resolve, reject) => {
+      if (abortRef.current?.signal.aborted) { reject(new Error("Cancelled")); return; }
+      pollCount++;
+      try {
+        const pr = await fetch(`${BACKEND}/extract/status/${invoiceObjId}`, { headers: getAuthHeaders() });
+        const ps = await pr.json();
+        if (ps.processing_state === "completed" || ps.status === "draft" || ps.status === "validated") {
+          if (ps.display_id) {
+            const ir = await fetch(`${BACKEND}/invoices/${ps.display_id}`, { headers: getAuthHeaders() });
+            if (ir.ok) {
+              const inv = await ir.json();
+              const ext = inv.extracted || {};
+              const items = Array.isArray(ext.line_items) ? ext.line_items : [];
+              setCurrentId(ps.display_id);
+              setForm({
+                gstin: ext.gstin || "", invoice_number: ext.invoice_number || "", date: ext.date || "",
+                total_amount: ext.total_amount != null ? String(ext.total_amount) : "",
+                vendor_name: ext.vendor_name || "", vendor_address: ext.vendor_address || "",
+                buyer_gstin: ext.buyer_gstin || companyGstin || "", buyer_name: ext.buyer_name || companyName || "",
+                voucher_type: ext.voucher_type || "Purchase", confidence: ext.confidence ?? null,
+                ind_confidence: ext._independent_confidence ?? null,
+                line_items: items, _provider: ext._provider || "", _model: ext._model || "",
+                freight: ext.freight || 0, round_off: ext.round_off || 0, tds_amount: ext.tds_amount || 0,
+              });
+              setLedgers(items.map(() => ""));
+              setReviewConfirmed(false);
+              setReviewErrors(null);
+              setValidation(inv.validation || ext.validation || null);
+              if (inv.extracted?._duplicate_warning) setDupWarning(inv.extracted._duplicate_warning);
+              setSuccess(true);
+              resolve(); return;
+            }
+          }
+          setCurrentId(invoiceObjId);
+          setSuccess(true);
+          resolve();
+        } else if (ps.processing_state?.startsWith("failed") || ps.status === "extraction_failed") {
+          reject(new Error(ps.processing_state || "Extraction failed"));
+        } else if (pollCount > 60) {
+          reject(new Error("Extraction timed out after 2 minutes"));
+        } else {
+          const isActive = ps.processing_state === "processing";
+          const delay = isActive ? 3000 : 8000;
+          setTimeout(() => poll(resolve, reject), delay);
+        }
+      } catch (e) {
+        if (e.name !== "AbortError") setTimeout(() => poll(resolve, reject), 8000);
+        else reject(e);
+      }
+    };
+    return new Promise((resolve, reject) => poll(resolve, reject));
+  }
+
+  // Day 3+4: Enhanced queue processing with better status tracking
   const processOne = useCallback(async (file, idx) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -253,59 +460,9 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
       }
       const body = await res.json();
       if (res.status === 202 && body.invoice_id) {
-        let pollCount = 0;
-        const poll = async (resolve, reject) => {
-          if (abortRef.current?.signal.aborted) { reject(new Error("Cancelled")); return; }
-          pollCount++;
-          try {
-            const pr = await fetch(`${BACKEND}/extract/status/${body.invoice_id}`, { headers: getAuthHeaders() });
-            const ps = await pr.json();
-            if (ps.processing_state === "completed" || ps.status === "draft" || ps.status === "validated") {
-              if (ps.display_id) {
-                const ir = await fetch(`${BACKEND}/invoices/${ps.display_id}`, { headers: getAuthHeaders() });
-                if (ir.ok) {
-                  const inv = await ir.json();
-                  const ext = inv.extracted || {};
-                  const items = Array.isArray(ext.line_items) ? ext.line_items : [];
-                  setCurrentId(ps.display_id);
-                  setForm({
-                    gstin: ext.gstin || "", invoice_number: ext.invoice_number || "", date: ext.date || "",
-                    total_amount: ext.total_amount != null ? String(ext.total_amount) : "",
-                    vendor_name: ext.vendor_name || "", vendor_address: ext.vendor_address || "",
-                    buyer_gstin: ext.buyer_gstin || companyGstin || "", buyer_name: ext.buyer_name || companyName || "",
-                    voucher_type: ext.voucher_type || "Purchase", confidence: ext.confidence ?? null,
-                    line_items: items, _provider: ext._provider || "", _model: ext._model || "",
-                    freight: ext.freight || 0, round_off: ext.round_off || 0, tds_amount: ext.tds_amount || 0,
-                  });
-                  setLedgers(items.map(() => ""));
-                  setReviewConfirmed(false);
-                  setReviewErrors(null);
-                  setValidation(inv.validation || ext.validation || null);
-                  if (inv.extracted?._duplicate_warning) setDupWarning(inv.extracted._duplicate_warning);
-                  setSuccess(true);
-                  setQueue((q) => { const n = [...q]; n[idx] = { ...n[idx], status: "done", data: ext }; return n; });
-                  resolve(); return;
-                }
-              }
-              setCurrentId(body.invoice_id);
-              setSuccess(true);
-              setQueue((q) => { const n = [...q]; n[idx] = { ...n[idx], status: "done" }; return n; });
-              resolve();
-            } else if (ps.processing_state?.startsWith("failed") || ps.status === "extraction_failed") {
-              setQueue((q) => { const n = [...q]; n[idx] = { ...n[idx], status: "failed", error: ps.processing_state }; return n; });
-              reject(new Error(ps.processing_state || "Extraction failed"));
-            } else if (pollCount > 60) {
-              setQueue((q) => { const n = [...q]; n[idx] = { ...n[idx], status: "failed", error: "Timed out" }; return n; });
-              reject(new Error("Extraction timed out after 2 minutes"));
-            } else {
-              setTimeout(() => poll(resolve, reject), 2000);
-            }
-          } catch (e) {
-            if (e.name !== "AbortError") setTimeout(() => poll(resolve, reject), 2000);
-            else reject(e);
-          }
-        };
-        await new Promise((resolve, reject) => poll(resolve, reject));
+        setQueue((q) => { const n = [...q]; n[idx] = { ...n[idx], oid: body.invoice_id }; return n; });
+        await pollExtractionStatus(body.invoice_id);
+        setQueue((q) => { const n = [...q]; n[idx] = { ...n[idx], status: "done" }; return n; });
       } else {
         const d = body;
         setCurrentId(d._id || null);
@@ -356,11 +513,17 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
     }
     setQueueIdx(-1);
     setExtracting(false);
+    setBatchInvoiceIds((prev) => {
+      const ids = entries.filter((e) => e.oid).map((e) => e.oid);
+      return [...new Set([...prev, ...ids])];
+    });
   }, [selectedClient, processOne]);
 
   const queueDone = queue.filter((e) => e.status === "done").length;
   const queueFail = queue.filter((e) => e.status === "failed").length;
-  const showQueue = queue.length > 0 && (extracting || queueFail > 0 || queueDone < queue.length);
+  const queueTotal = queue.length;
+  const showQueue = queueTotal > 0 && (extracting || queueFail > 0 || queueDone < queueTotal);
+  const queueProgressPct = queueTotal > 0 ? Math.round(((queueDone + queueFail) / queueTotal) * 100) : 0;
 
   return (
     <div className="space-y-5 animate-fadeInUp">
@@ -378,50 +541,89 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
 
       {/* Upload Panel */}
       {!showForm && (
-        <UploadPanel
-          onUpload={handleUpload}
-          extracting={extracting}
-          extractionStatus={null}
-        />
+        <div className="space-y-3">
+          <UploadPanel
+            onUpload={handleUpload}
+            extracting={extracting}
+            extractionStatus={null}
+          />
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-white/10" />
+            <span className="text-xs text-gray-500">or</span>
+            <div className="flex-1 h-px bg-white/10" />
+          </div>
+          <button
+            onClick={() => {
+              resetForm();
+              setShowForm(true);
+            }}
+            className="w-full premium-btn-secondary text-sm py-2"
+          >
+            Enter Invoice Manually
+          </button>
+        </div>
       )}
 
-      {/* Queue Progress */}
+      {/* Day 3: Enhanced Queue Progress with status chips + progress bar */}
       {showQueue && (
-        <div className="premium-card p-4 space-y-2">
+        <div className="premium-card p-4 space-y-3">
           <div className="flex justify-between items-center">
             <span className="text-sm font-medium text-gray-300">
-              Processing {queueIdx + 1}/{queue.length}
+              {extracting ? `Processing ${queueIdx + 1}/${queueTotal}` : "Batch complete"}
             </span>
-            <span className="text-xs text-gray-500">
-              {queueDone} done, {queueFail} failed
-            </span>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-green-400">{queueDone} done</span>
+              {queueFail > 0 && <span className="text-red-400">{queueFail} failed</span>}
+              <span className="text-gray-500">{queueProgressPct}%</span>
+            </div>
           </div>
-          <div className="w-full bg-gray-700 rounded-full h-1.5">
-            <div className="bg-indigo-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${((queueIdx + 1) / queue.length) * 100}%` }} />
+
+          {/* Progress bar */}
+          <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${queueFail > 0 ? "bg-gradient-to-r from-green-500 to-red-500" : "bg-gradient-to-r from-indigo-500 to-green-500"}`}
+              style={{ width: `${queueProgressPct}%` }}
+            />
           </div>
-          <div className="max-h-32 overflow-y-auto space-y-1">
+
+          {/* Day 3: Per-file status list with chips + retry */}
+          <div className="max-h-48 overflow-y-auto space-y-1.5">
             {queue.map((e, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs">
-                <span className={
-                  e.status === "done" ? "text-green-400" :
-                  e.status === "failed" ? "text-red-400" :
-                  e.status === "processing" ? "text-yellow-400" :
-                  "text-gray-500"
-                }>
-                  {e.status === "done" ? "\u2713" : e.status === "failed" ? "\u2717" : e.status === "processing" ? "\u25B6" : "\u25CB"}
-                </span>
-                <span className="truncate flex-1 text-gray-400">{e.name}</span>
-                {e.error && <span className="text-red-400 truncate max-w-[100px]">{e.error}</span>}
+              <div key={i} className="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-white/[0.02]">
+                <QueueStatusChip status={e.status} error={e.error} />
+                <span className="text-xs text-gray-400 truncate flex-1">{e.name}</span>
+                {e.error && <span className="text-[10px] text-red-400/70 truncate max-w-[140px]" title={e.error}>{e.error}</span>}
+                {/* Day 5: Retry button for failed items */}
                 {e.status === "failed" && e.file && (
-                  <button onClick={async () => {
-                    setQueue((q) => { const n = [...q]; n[i] = { ...n[i], status: "processing", error: null }; return n; });
-                    await processOne(e.file, i);
-                  }} className="text-blue-400 hover:text-blue-300 shrink-0 ml-1">Retry</button>
+                  <button onClick={() => retryExtraction(e)}
+                    className="text-[10px] text-blue-400 hover:text-blue-300 shrink-0 px-1.5 py-0.5 rounded bg-blue-500/10 hover:bg-blue-500/20 transition-colors">
+                    Retry
+                  </button>
+                )}
+                {e.status === "failed" && !e.file && (
+                  <button onClick={() => { setRecoveryInvoice(e); setShowManualEntry(true); }}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 shrink-0 px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 transition-colors">
+                    Enter Manually
+                  </button>
                 )}
               </div>
             ))}
           </div>
         </div>
+      )}
+
+      {/* Batch Review Grid — shown after batch completes with multiple files */}
+      {!extracting && batchInvoiceIds.length > 1 && !showForm && (
+        <BatchReviewGrid
+          invoiceIds={batchInvoiceIds}
+          onRefresh={() => setQueue([])}
+          onReviewInvoice={(displayId) => {
+            setCurrentId(displayId);
+            setQueue([]);
+            setBatchInvoiceIds([]);
+            setSuccess(true);
+          }}
+        />
       )}
 
       {/* Error / Duplicate Warnings */}
@@ -473,6 +675,15 @@ export default function ExtractPage({ form, setForm, currentId, setCurrentId, se
           onCancel={() => setShowUndoConfirm(false)}
         />
       )}
+
+      {/* Day 5: Enhanced Manual Entry Modal */}
+      <ManualEntryModal
+        show={showManualEntry}
+        onClose={() => setShowManualEntry(false)}
+        manualForm={manualForm}
+        setManualForm={setManualForm}
+        onSubmit={submitManualEntry}
+      />
 
       <ValidationModal show={showValModal} data={valModalData}
         onGenerateAnyway={() => { setShowValModal(false); downloadXML(true); }}

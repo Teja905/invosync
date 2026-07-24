@@ -9,7 +9,6 @@ swallowed so error tracking can never itself cause an outage.
 """
 
 import os
-import traceback
 
 from core.logging import get_logger
 

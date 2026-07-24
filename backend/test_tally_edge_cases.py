@@ -14,8 +14,7 @@ Status annotations:
     [N/A]  — not a unit-test concern (batch upload, API timeout resilience)
 """
 
-from decimal import Decimal, ROUND_HALF_UP
-from pathlib import Path
+from decimal import Decimal
 
 import pytest
 from ledger_nlp import resolve_contextual_ledger_nlp
@@ -23,11 +22,10 @@ from ledger_nlp import resolve_contextual_ledger_nlp
 from gst_engine import aggregate_and_round_slab_taxes, compute_gst_entries, precise_round, compute_tax_from_items, determine_gst_type, _gst_ledger_name
 from schemas import (
     StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry,
-    ALLOWED_GST_SLABS, GST_STATE_CODES,
 )
 from xml_generator import TallyXmlGenerator, _sanitize
 from company_config import CompanyConfig
-from validation_layer import validate_invoice_for_xml, verify_unbreakable_double_entry_balance
+from validation_layer import validate_invoice_for_xml
 
 
 # =============================================================================
@@ -600,7 +598,7 @@ def test_ocr_postprocessor_filters_corrupted_text_artifacts():
 def test_validation_layer_allows_acceptable_paise_drift():
     """Confirms that mathematical variance within the ₹0.50 threshold
     is handled as a warning rather than a blocking error."""
-    from validation_layer import validate_invoice_for_xml, COMMERCIAL_PAISE_TOLERANCE
+    from validation_layer import validate_invoice_for_xml
     inv = StandardizedInvoice(
         voucher_type=VoucherType.PURCHASE,
         invoice_number="DRIFT-001", invoice_date="2026-07-09",
@@ -624,7 +622,7 @@ def test_validation_layer_allows_acceptable_paise_drift():
 def test_validation_layer_blocks_large_mathematical_discrepancies():
     """Ensures that mathematical discrepancies exceeding the ₹1.00 limit
     are caught and flagged as hard blocking errors."""
-    from validation_layer import validate_invoice_for_xml, CRITICAL_COMPLIANCE_TOLERANCE
+    from validation_layer import validate_invoice_for_xml
     inv = StandardizedInvoice(
         voucher_type=VoucherType.PURCHASE,
         invoice_number="BIG-001", invoice_date="2026-07-09",
@@ -726,9 +724,9 @@ def test_forex_amount_tag_in_purchase_voucher():
         currency="USD", exchange_rate=83.50,
     )
     xml = gen.generate(inv)
-    assert "ORIGINALAMOUNT" in xml, f"Missing ORIGINALAMOUNT in forex XML"
-    assert "USD" in xml, f"Missing USD currency in forex XML"
-    assert "83.50" in xml or "83.5" in xml, f"Missing exchange rate in forex XML"
+    assert "ORIGINALAMOUNT" in xml, "Missing ORIGINALAMOUNT in forex XML"
+    assert "USD" in xml, "Missing USD currency in forex XML"
+    assert "83.50" in xml or "83.5" in xml, "Missing exchange rate in forex XML"
 
 
 # =============================================================================
@@ -899,7 +897,7 @@ class TestJournalServiceVoucherIntegration:
             "grand_total": 27140.00,
         }
         
-        from schemas import StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry
+        from schemas import StandardizedInvoice, VoucherType, TaxEntry
         from xml_generator import TallyXmlGenerator
         from company_config import CompanyConfig
         
@@ -962,7 +960,7 @@ class TestJournalServiceVoucherIntegration:
             "grand_total": 27140.00,
         }
         
-        from schemas import StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry
+        from schemas import StandardizedInvoice, VoucherType, LineItem, TaxEntry
         from xml_generator import TallyXmlGenerator
         from company_config import CompanyConfig
         

@@ -3,6 +3,7 @@ import { useAuth } from "../auth";
 import BACKEND from "../api/client";
 import { queuedFetch } from "../api/queue";
 import { useToast } from "../components/Toast";
+import { CONFIDENCE_THRESHOLDS } from "../constants/thresholds";
 import ConfirmDialog from "../components/ConfirmDialog";
 import WarningBanner from "../components/WarningBanner";
 import MissingMastersDialog from "../components/MissingMastersDialog";
@@ -34,6 +35,8 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
   const [pendingSyncInv, setPendingSyncInv] = useState(null);
   const [syncingId, setSyncingId] = useState(null);
   const [showBulkDelete, setShowBulkDelete] = useState(false);
+  const [flagOnly, setFlagOnly] = useState(false);
+  const [bulkReviewing, setBulkReviewing] = useState(false);
 
   useEffect(() => {
     fetch(`${BACKEND}/clients`, { headers: getAuthHeaders() })
@@ -57,8 +60,71 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
   }
 
   function toggleSelectAll() {
-    if (selectedIds.length === invoices.length) { setSelectedIds([]); }
-    else { setSelectedIds(invoices.map((i) => i.id)); }
+    const visible = getVisibleInvoices();
+    const visibleIds = visible.map(i => i.id);
+    if (selectedIds.length === visibleIds.length && visibleIds.every(id => selectedIds.includes(id))) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(visibleIds);
+    }
+  }
+
+  function getVisibleInvoices() {
+    if (!flagOnly) return invoices;
+    return invoices.filter(inv => {
+      const conf = inv.ind_confidence ?? inv.confidence;
+      return inv.status === "draft" && conf != null && conf < CONFIDENCE_THRESHOLDS.MEDIUM;
+    });
+  }
+
+  const visibleInvoices = getVisibleInvoices();
+
+  const stats = {
+    total: invoices.length,
+    draft: invoices.filter(i => i.status === "draft").length,
+    needsReview: invoices.filter(i => i.status === "draft" && ((i.ind_confidence ?? i.confidence) != null && (i.ind_confidence ?? i.confidence) < CONFIDENCE_THRESHOLDS.MEDIUM)).length,
+    ready: invoices.filter(i => i.status === "validated").length,
+    synced: invoices.filter(i => i.status === "exported").length,
+  };
+
+  async function bulkConfirmReview() {
+    if (!selectedIds.length) return;
+    setBulkReviewing(true);
+    setActionMsg({ type: "info", text: `Confirming review for ${selectedIds.length} invoices...` });
+    try {
+      const res = await queuedFetch(`/api/v3/invoices/bulk/confirm-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ invoice_ids: selectedIds }),
+      });
+      const body = await res.json();
+      if (res.ok) {
+        const { confirmed = 0, failed = 0, skipped = 0 } = body;
+        const failedItems = (body.results || []).filter(r => r.status === "validation_failed" || r.status === "error");
+        const skippedItems = (body.results || []).filter(r => r.status === "skipped");
+
+        let msg = "";
+        if (confirmed > 0) msg += `${confirmed} confirmed`;
+        if (skipped > 0) msg += `${msg ? " · " : ""}${skipped} skipped (not draft)`;
+        if (failed > 0) {
+          const details = failedItems.slice(0, 5).map(r => {
+            const errs = r.errors || [r.error || "Unknown"];
+            return `#${r.id}: ${errs.join(", ")}`;
+          }).join("; ");
+          msg += `${msg ? " · " : ""}${failed} failed — ${details}`;
+        }
+        const msgType = failed > 0 ? "warning" : "success";
+        setActionMsg({ type: msgType, text: msg || "Done" });
+        setSelectedIds([]);
+        setRefreshKey((k) => k + 1);
+      } else {
+        setActionMsg({ type: "error", text: body.message || "Bulk confirm failed" });
+      }
+    } catch (e) {
+      setActionMsg({ type: e.queued ? "info" : "error", text: e.queued ? "Saved offline — will sync when reconnected." : "Bulk confirm failed" });
+    } finally {
+      setBulkReviewing(false);
+    }
   }
 
   async function applyBulkMap() {
@@ -123,7 +189,6 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
 
   async function sendToTally(inv) {
     setActionMsg(null);
-    // Step 1: Run pre-flight diagnostics to check for missing masters
     try {
       const preRes = await fetch(`${BACKEND}/api/v3/sync/preflight-diagnostics`, {
         method: "POST",
@@ -139,14 +204,11 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
         if (preResult.missing_masters && preResult.missing_masters.length > 0) {
           setPendingSyncInv(inv);
           setMissingMasters(preResult.missing_masters);
-          return; // Dialog will handle the rest
+          return;
         }
       }
-    } catch (e) {
-      // Preflight failed — fall through to direct sync
-    }
+    } catch (e) {}
 
-    // Step 2: No missing masters — queue directly
     await queueSyncNow(inv);
   }
 
@@ -175,7 +237,6 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
     const inv = pendingSyncInv;
     setPendingSyncInv(null);
     if (action === "synced" || action === "created") {
-      // Masters were created (or preprended) — proceed to queue
       queueSyncNow(inv);
     }
   }
@@ -194,9 +255,27 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
     }
   }
 
+  function confidenceBar(inv) {
+    const conf = inv.ind_confidence ?? inv.confidence;
+    if (conf == null) return <span className="text-xs text-gray-500">—</span>;
+    const pct = Math.round(conf * 100);
+    let color = "bg-green-500";
+    let textColor = "text-green-400";
+    if (conf < CONFIDENCE_THRESHOLDS.MEDIUM) { color = "bg-red-500"; textColor = "text-red-400"; }
+    else if (conf < CONFIDENCE_THRESHOLDS.HIGH) { color = "bg-yellow-500"; textColor = "text-yellow-400"; }
+    return (
+      <div className="flex items-center gap-1.5" title={`Confidence: ${pct}%`}>
+        <div className="w-12 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className={`text-xs ${textColor}`}>{pct}%</span>
+      </div>
+    );
+  }
+
   function statusBadge(inv) {
     const s = inv.status;
-    const conf = inv.confidence;
+    const conf = inv.ind_confidence ?? inv.confidence;
     const needsReview = conf != null && conf < 0.7;
 
     if (s === "draft") {
@@ -270,6 +349,7 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
         <div className={`premium-card rounded-xl p-4 text-sm flex items-center gap-2 ${
           actionMsg.type === "error" ? "border-red-500/20 text-red-300"
           : actionMsg.type === "success" ? "border-green-500/20 text-green-300"
+          : actionMsg.type === "warning" ? "border-yellow-500/20 text-yellow-300"
           : "border-indigo-500/20 text-indigo-300"
         }`}>{actionMsg.text}</div>
       )}
@@ -282,7 +362,26 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
         </div>
       )}
 
-      <div className="premium-card rounded-xl px-4 py-3 flex items-center gap-3">
+      {/* Summary Stats */}
+      {invoices.length > 0 && (
+        <div className="grid grid-cols-5 gap-3">
+          {[
+            { label: "Total", value: stats.total, color: "text-gray-200", bg: "bg-gray-500/10" },
+            { label: "Draft", value: stats.draft, color: "text-yellow-400", bg: "bg-yellow-500/10" },
+            { label: "Needs Review", value: stats.needsReview, color: "text-red-400", bg: "bg-red-500/10" },
+            { label: "Ready", value: stats.ready, color: "text-green-400", bg: "bg-green-500/10" },
+            { label: "Synced", value: stats.synced, color: "text-blue-400", bg: "bg-blue-500/10" },
+          ].map(s => (
+            <div key={s.label} className={`premium-card rounded-xl px-4 py-3 ${s.bg}`}>
+              <div className={`text-2xl font-bold ${s.color}`}>{s.value}</div>
+              <div className="text-xs text-gray-400 mt-0.5">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Filters + Client Selector */}
+      <div className="premium-card rounded-xl px-4 py-3 flex items-center gap-3 flex-wrap">
         <label className="text-sm text-gray-300 whitespace-nowrap">Filter by client:</label>
         <select className="input max-w-xs" value={filterClient} onChange={(e) => setFilterClient(e.target.value)}>
           <option value="">All Clients</option>
@@ -290,6 +389,14 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
             <option key={c.client_id} value={c.client_id}>{c.company_name}</option>
           ))}
         </select>
+        <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-1.5 text-sm text-gray-300 cursor-pointer select-none">
+            <input type="checkbox" className="accent-yellow-500" checked={flagOnly}
+              onChange={(e) => { setFlagOnly(e.target.checked); setSelectedIds([]); }} />
+            Flagged only
+          </label>
+          {flagOnly && <span className="text-xs text-yellow-400">({stats.needsReview} items)</span>}
+        </div>
       </div>
 
       {invoices.length === 0 ? (
@@ -299,13 +406,19 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
           <p className="text-sm text-[var(--text-secondary)] max-w-sm mx-auto">
             Upload your first invoice to get started. InvoSync extracts the data, validates it, and prepares Tally-ready XML automatically.
           </p>
-          <p className="text-xs text-[var(--text-tertiary)]">💡 Tip: you can upload multiple invoices at once from the Extract page.</p>
+          <p className="text-xs text-[var(--text-tertiary)]">{'\uD83D\uDCA1'} Tip: you can upload multiple invoices at once from the Extract page.</p>
         </div>
       ) : (
         <div>
+          {/* Bulk Actions Bar */}
           {selectedIds.length > 0 && (
             <div className="premium-card rounded-xl px-4 py-3 mb-3 flex flex-wrap items-center gap-2">
               <span className="text-xs text-gray-400 font-medium">{selectedIds.length} selected</span>
+
+              <button onClick={bulkConfirmReview} disabled={bulkReviewing}
+                className="px-3 py-1.5 bg-green-500/20 text-green-300 rounded-lg text-xs font-medium hover:bg-green-500/30 disabled:opacity-50 disabled:cursor-not-allowed">
+                {bulkReviewing ? "Reviewing..." : "Confirm Review"}
+              </button>
 
               <input className="input flex-1 text-xs min-w-[140px]" value={bulkLedger}
                 onChange={(e) => setBulkLedger(e.target.value)} placeholder="Target ledger..." />
@@ -326,7 +439,7 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
                   if (!e.queued) setActionMsg({type:"error", text:"Generate failed"});
                 }
               }}
-                className="px-3 py-1.5 bg-green-500/20 text-green-300 rounded-lg text-xs font-medium hover:bg-green-500/30">
+                className="px-3 py-1.5 bg-purple-500/20 text-purple-300 rounded-lg text-xs font-medium hover:bg-purple-500/30">
                 Generate XML
               </button>
 
@@ -354,23 +467,28 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
                 className="text-xs text-gray-500 hover:text-gray-300 ml-1">Clear</button>
             </div>
           )}
+
+          {/* Invoice Table */}
           <div className="premium-card-flat overflow-hidden">
             <table className="w-full text-sm">
               <thead><tr className="border-b border-white/5 text-left text-xs text-gray-500 uppercase">
                 <th className="px-2 py-3.5 w-8">
-                  <input type="checkbox" className="accent-indigo-500" checked={selectedIds.length === invoices.length && invoices.length > 0} onChange={toggleSelectAll} />
+                  <input type="checkbox" className="accent-indigo-500"
+                    checked={visibleInvoices.length > 0 && visibleInvoices.every(i => selectedIds.includes(i.id))}
+                    onChange={toggleSelectAll} />
                 </th>
                 <th className="px-2 py-3.5 font-medium">#</th>
                 <th className="px-4 py-3.5 font-medium">Vendor</th>
                 <th className="px-4 py-3.5 font-medium">Invoice</th>
                 <th className="px-4 py-3.5 font-medium">Date</th>
+                <th className="px-4 py-3.5 font-medium">Confidence</th>
                 <th className="px-4 py-3.5 font-medium">Status</th>
                 <th className="px-4 py-3.5 font-medium text-center">Tally Sync</th>
                 <th className="px-4 py-3.5 font-medium text-right">Amount</th>
                 <th className="px-4 py-3.5 font-medium text-center">XML</th>
               </tr></thead>
               <tbody className="divide-y divide-white/5">
-                {invoices.map((inv) => (
+                {visibleInvoices.map((inv) => (
                   <tr key={inv.id} className={`premium-table-row cursor-pointer hover:bg-white/[0.03] ${selectedIds.includes(inv.id) ? "bg-indigo-500/5" : ""}`} onClick={() => onEditInvoice(inv.id)}>
                     <td className="px-2 py-3.5">
                       <input type="checkbox" className="accent-indigo-500" checked={selectedIds.includes(inv.id)} onChange={(e) => { e.stopPropagation(); toggleSelect(inv.id); }} onClick={(e) => e.stopPropagation()} />
@@ -379,6 +497,7 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
                     <td className="px-4 py-3.5 font-medium text-gray-200">{inv.vendor_name || "-"}</td>
                     <td className="px-4 py-3.5 text-gray-300">{inv.invoice_number || "-"}</td>
                     <td className="px-4 py-3.5 text-gray-400">{inv.date || "-"}</td>
+                    <td className="px-4 py-3.5">{confidenceBar(inv)}</td>
                     <td className="px-4 py-3.5">
                       {statusBadge(inv)}
                       {inv.decision_label && inv.decision_label !== "Unknown" && (
@@ -399,6 +518,11 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
                 ))}
               </tbody>
             </table>
+            {flagOnly && visibleInvoices.length === 0 && (
+              <div className="p-8 text-center text-sm text-gray-500">
+                No flagged invoices — all extractions look good!
+              </div>
+            )}
           </div>
           </div>
       )}
@@ -415,7 +539,6 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
           onClose={() => { setShowDashModal(false); setDashPendingInv(null); }}
           onApplyFix={(fix) => {
             if (dashPendingInv) {
-              // Fix applies to invoice via PUT
               fetch(`${BACKEND}/invoices/${dashPendingInv.id}`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json", ...getAuthHeaders() },
@@ -448,7 +571,6 @@ export default function DashboardPage({ refreshKey, setRefreshKey, onEditInvoice
         />
       )}
 
-      {/* Missing Masters Dialog */}
       {missingMasters && pendingSyncInv && (
         <MissingMastersDialog
           invoice={pendingSyncInv}

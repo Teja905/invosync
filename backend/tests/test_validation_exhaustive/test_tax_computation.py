@@ -1,6 +1,5 @@
 """Validation rules: tax computation correctness — CGST/SGST split, IGST, rate slabs."""
 
-import pytest
 from validation_layer import validate_invoice_for_xml
 from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType, GSTType
 from gst_engine import validate_tax_rate, ALLOWED_GST_SLABS, compute_gst_entries
@@ -102,3 +101,28 @@ class TestTaxComputationInInvoices:
         )
         assert any("igst" in str(k).lower() for k in entries), f"Expected IGST entries, got {entries}"
         assert not any("cgst" in str(k).lower() for k in entries), f"Should not have CGST, got {entries}"
+
+    def test_invalid_tax_rate_fails_check(self):
+        """An invoice with an invalid (non-slotted) GST rate must fail the tax_rates validation check."""
+        inv = StandardizedInvoice(
+            vendor_name="Test Vendor",
+            invoice_number="INV-001",
+            invoice_date="2025-01-01",
+            total_taxable_value=1000.0,
+            total_tax=1170.0,
+            total_amount=2170.0,
+            voucher_type=VoucherType.PURCHASE,
+            gst_type=GSTType.CGST_SGST,
+            line_items=[
+                LineItem(description="Item A", taxable_value=1000.0, tax_rate=117),
+            ],
+            taxes=[
+                TaxEntry(name="CGST", rate=58.5, amount=585.0, type="CGST"),
+                TaxEntry(name="SGST", rate=58.5, amount=585.0, type="SGST"),
+            ],
+        )
+        result = validate_invoice_for_xml(inv)
+        tr = result.checks.get("tax_rates", {})
+        assert tr.get("pass") is False, (
+            f"Expected tax_rates check to fail for 117% rate, got: {tr}"
+        )

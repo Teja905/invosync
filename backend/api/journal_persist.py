@@ -38,6 +38,7 @@ async def persist_journal(
     usr_cfg,
     date_override: Optional[str] = None,
     voucher_type_override: Optional[str] = None,
+    session=None,
 ):
     """Persist the ledger legs captured during XML generation.
 
@@ -67,8 +68,8 @@ async def persist_journal(
             })
             if ledger not in seen_ledgers:
                 seen_ledgers.add(ledger)
-                await db.upsert_ledger_type(company_id, ledger, account_type, parent)
-        await db.replace_journal_lines(str(invoice_id), enriched)
+                await db.upsert_ledger_type(company_id, ledger, account_type, parent, session=session)
+        await db.replace_journal_lines(str(invoice_id), enriched, session=session)
         await _invalidate_report_cache()
     except Exception as e:  # never block generation on reporting persistence
         import logging

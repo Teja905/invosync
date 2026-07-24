@@ -9,8 +9,7 @@ Stages:
 """
 
 import re
-from datetime import date, datetime, timezone
-from typing import Optional
+from datetime import date, datetime
 
 COMPANY_STATE_CODE = None  # set by main.py at import time
 
@@ -219,6 +218,7 @@ def check_duplicate(data: dict, existing_invoices: list) -> dict:
     vendor = (data.get("vendor_name") or "").strip().lower()
     inv_no = (data.get("invoice_number") or "").strip().lower()
     total = data.get("total_amount")
+    date = (data.get("invoice_date") or "").strip().lower()
 
     if not vendor or not inv_no:
         return {"pass": True, "message": "Insufficient data for duplicate check"}
@@ -228,6 +228,7 @@ def check_duplicate(data: dict, existing_invoices: list) -> dict:
         ev = (ed.get("vendor_name") or "").strip().lower()
         ei = (ed.get("invoice_number") or "").strip().lower()
         et = ed.get("total_amount")
+        ed_date = (ed.get("invoice_date") or "").strip().lower()
 
         if ev == vendor and ei == inv_no:
             match = True
@@ -237,6 +238,8 @@ def check_duplicate(data: dict, existing_invoices: list) -> dict:
                         match = False
                 except (ValueError, TypeError):
                     pass
+            if date and ed_date and date != ed_date:
+                match = False
             if match:
                 dup_id = existing.get("id") or existing.get("_id") or ""
                 return {
@@ -365,13 +368,13 @@ def validate_xml(xml_str: str, data: dict) -> list:
         issues.append(f"Voucher not balanced: debits ₹{debit_total:.2f} ≠ credits ₹{credit_total:.2f}")
 
     # Check date format in XML
-    dates = _re.findall(r"<DATE>(\d{8})</DATE>", xml_str)
+    dates = re.findall(r"<DATE>(\d{8})</DATE>", xml_str)
     for d in dates:
-        if not _re.match(r"^\d{8}$", d):
+        if not re.match(r"^\d{8}$", d):
             issues.append(f"Invalid date format in XML: {d}")
 
     # Check for unsafe characters in text content
-    text_contents = _re.findall(r">([^<]+)<", xml_str)
+    text_contents = re.findall(r">([^<]+)<", xml_str)
     for text in text_contents:
         if any(ord(c) < 32 and c not in "\n\r\t" for c in text):
             issues.append(f"XML contains control characters in: '{text[:50]}...'")

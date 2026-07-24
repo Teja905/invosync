@@ -4,7 +4,6 @@ import re
 import xml.etree.ElementTree as ET
 import pytest
 from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType, GSTType
-from xml_generator import TallyXmlGenerator, CompanyConfig
 from gst_engine import _compute_gstin_checksum
 
 

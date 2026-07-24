@@ -3,7 +3,8 @@ chart-of-accounts classifier. Proves every generated voucher's legs balance
 and that ledger names map deterministically to account types.
 """
 
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest

@@ -2,7 +2,6 @@
 
 import re
 import sys
-import xml.etree.ElementTree as ET
 sys.path.insert(0, __file__)
 
 from schemas import StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry

@@ -1,7 +1,6 @@
 """XML generator: stock item creation for goods invoices."""
 
 import re
-import pytest
 from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType, GSTType
 
 
@@ -74,7 +73,7 @@ class TestStockItemCreation:
         )
         xml = generator.generate(inv)
         # Stock item should reference the HSN
-        assert "8471" in xml, f"HSN code missing in stock item XML"
+        assert "8471" in xml, "HSN code missing in stock item XML"
 
     def test_service_invoice_skips_stock_items(self, generator):
         """Service invoices must not create stock items even if flag is set."""

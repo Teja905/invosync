@@ -3,6 +3,7 @@
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from extractors import ExtractionPipeline
+from core.ai_cache import SemanticCache
 from company_config import CompanyConfig
 from xml_generator import TallyXmlGenerator
 from ledger_mapping import LedgerMappingEngine
@@ -17,8 +18,9 @@ import database as db
 
 logger = get_logger(__name__)
 
-# Core engine instances
-extraction_pipeline = ExtractionPipeline()
+# Core engine instances — cache is wired after DB connect in main.py lifespan
+ai_cache = SemanticCache()  # memory-only until DB connected
+extraction_pipeline = ExtractionPipeline(cache=ai_cache)
 company_config = CompanyConfig()
 xml_generator = TallyXmlGenerator(company_config)
 ledger_engine = LedgerMappingEngine(company_config)

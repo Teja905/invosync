@@ -11,7 +11,6 @@ falls back to a default ledger.
 """
 
 import difflib
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional

@@ -70,7 +70,7 @@ async def pre_import_check(data: InvoiceDataLegacy, current_user: dict = Depends
 
         inv_no = standard.invoice_number.strip()
         if vendor_name and inv_no:
-            dup = await db.find_duplicate(vendor_name, inv_no, user_id)
+            dup = await db.find_duplicate(vendor_name, inv_no, user_id, date=standard.invoice_date)
             if dup:
                 report["warnings"].append({
                     "type": "duplicate_invoice",
@@ -91,7 +91,7 @@ async def generate_xml(data: InvoiceDataLegacy, force: bool = Query(False), curr
         validation_result = validate_invoice_for_xml(standard)
 
         user_id = current_user.get("user_id", current_user.get("email", ""))
-        dup_msg = await check_duplicate(standard.vendor_name, standard.invoice_number, standard.total_amount, user_id)
+        dup_msg = await check_duplicate(standard.vendor_name, standard.invoice_number, standard.total_amount, user_id, date=standard.invoice_date)
         if dup_msg:
             validation_result.add_warning(dup_msg)
 
@@ -137,7 +137,7 @@ async def generate_xml(data: InvoiceDataLegacy, force: bool = Query(False), curr
                     client_id=data.client_id or 0,
                     extracted=raw,
                     validation=old_validation,
-                    xml_generated=True, xml_content=xml_str,
+                    xml_generated=False, xml_content=None,
                     xml_issues=xml_validation.errors,
                 )
             except Exception as e:
@@ -152,6 +152,9 @@ async def generate_xml(data: InvoiceDataLegacy, force: bool = Query(False), curr
                 db, inv_id, user_id, company_id, data.client_id or 0,
                 standard, xml_gen, usr_cfg,
             )
+            await db.update_invoice(inv_id, {
+                "xml_generated": True, "xml_content": xml_str,
+            })
 
         score = pipe_report.get("scores", {}).get("total", 0)
         report_json = json.dumps(pipe_report)

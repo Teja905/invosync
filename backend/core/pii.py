@@ -6,6 +6,7 @@ external AI providers. These helpers mask identifiable values before they reach 
 log line or an outbound request body.
 """
 
+import logging
 import re
 
 # 15-char GSTIN: 2 digits + 10 alnum + 1 digit + Z + 1 alnum/digit

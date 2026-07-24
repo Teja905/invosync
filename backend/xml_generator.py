@@ -1,22 +1,18 @@
 """Production-grade Tally XML Generator with full GST and Indian accounting compliance."""
 
-import html
-import os
 import re as _re
-from datetime import date, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import date
 from typing import Optional
 
 import xml.etree.ElementTree as ET
 
 from core.logging import get_logger
 from schemas import (
-    StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry, DocumentClass,
-    GST_STATE_CODES,
+    StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry, GST_STATE_CODES,
 )
 from company_config import CompanyConfig
 from ledger_mapping import LedgerMappingEngine
-from gst_engine import determine_gst_type, compute_gst_entries, compute_tax_from_items
+from gst_engine import compute_tax_from_items
 
 logger = get_logger(__name__)
 
@@ -77,6 +73,35 @@ class TallyXmlGenerator:
                 envelopes.append(master_tree.getroot())
         voucher_env = self._build_voucher_envelope([self._build_voucher_msg(inv)], active_company)
         envelopes.append(voucher_env)
+
+        # Balance verification: if journal lines don't sum to zero, add round-off
+        if self.journal_lines:
+            total = sum(j["debit"] - j["credit"] for j in self.journal_lines)
+            if abs(total) > 0.01:
+                logger.warning("XML imbalance detected: %.2f — adding round-off entry", total)
+                voucher_el = voucher_env.find(".//VOUCHER")
+                if voucher_el is None:
+                    logger.error(
+                        "Imbalance %.2f but VOUCHER element missing — cannot auto round-off",
+                        total,
+                    )
+                else:
+                    round_off_ledger = self.config.get_round_off_ledger()
+                    if total > 0:
+                        # More debits than credits → add credit round-off
+                        self._add_credit_entry(voucher_el, round_off_ledger, abs(total))
+                    else:
+                        # More credits than debits → add debit round-off
+                        self._add_debit_entry(voucher_el, round_off_ledger, abs(total))
+                    # Re-check; if still off, leave a hard log for operators
+                    recheck = sum(j["debit"] - j["credit"] for j in self.journal_lines)
+                    if abs(recheck) > 0.01:
+                        logger.error(
+                            "XML still unbalanced after round-off: %.2f (invoice=%s)",
+                            recheck,
+                            getattr(inv, "invoice_number", ""),
+                        )
+
         return self._combine_envelopes(envelopes)
 
     def _build_voucher_envelope(self, tallymessages: list[ET.Element], company_name: str = "") -> ET.Element:
@@ -630,6 +655,7 @@ class TallyXmlGenerator:
 
     def _add_debit_entry(self, voucher: ET.Element, ledger_name: str, amount: float):
         if amount <= 0:
+            logger.warning("Debit entry skipped: ledger=%s amount=%.2f (non-positive)", ledger_name, amount)
             return
         lst = ET.SubElement(voucher, "ALLLEDGERENTRIES.LIST")
         ET.SubElement(lst, "LEDGERNAME").text = _ensure_ledger(ledger_name)
@@ -639,6 +665,7 @@ class TallyXmlGenerator:
 
     def _add_credit_entry(self, voucher: ET.Element, ledger_name: str, amount: float):
         if amount <= 0:
+            logger.warning("Credit entry skipped: ledger=%s amount=%.2f (non-positive)", ledger_name, amount)
             return
         lst = ET.SubElement(voucher, "ALLLEDGERENTRIES.LIST")
         ET.SubElement(lst, "LEDGERNAME").text = _ensure_ledger(ledger_name)

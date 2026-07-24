@@ -15,7 +15,8 @@ public class VersionInfo
 
 public class AutoUpdater
 {
-    private const string CurrentVersion = "1.0.0";
+    private static readonly string CurrentVersion =
+        System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0";
     private readonly ILogger<AutoUpdater> _log;
 
     public AutoUpdater(ILogger<AutoUpdater> log)

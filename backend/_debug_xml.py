@@ -1,7 +1,8 @@
 """Debug: inspect generated XML structure."""
-import sys, re
+import sys
+import re
 sys.path.insert(0, '.')
-from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType
+from schemas import StandardizedInvoice, LineItem, TaxEntry
 from xml_generator import TallyXmlGenerator
 from company_config import CompanyConfig
 from gst_engine import _compute_gstin_checksum

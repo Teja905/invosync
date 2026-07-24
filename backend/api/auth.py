@@ -5,11 +5,10 @@ Response shape preserved for backward compat with the C# connector:
 """
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
 
 from core.auth import (
     create_tokens, verify_password, verify_access_token, verify_refresh_token,
-    ADMIN_EMAIL, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS,
+    ADMIN_EMAIL,
 )
 from core.logging import get_logger
 

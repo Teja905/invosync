@@ -31,6 +31,7 @@ export default function SettingsPage() {
   const [companyName, setCompanyName] = useState(user?.company_name || "");
   const [companyGstin, setCompanyGstin] = useState(user?.company_gstin || "");
   const [stateCode, setStateCode] = useState(user?.company_state_code || "");
+  const [userType, setUserType] = useState(user?.user_type || "");
 
   const [ledgerValues, setLedgerValues] = useState({
     purchase_ledger: user?.purchase_ledger || "Purchase",
@@ -133,6 +134,7 @@ export default function SettingsPage() {
           company_name: companyName,
           company_gstin: companyGstin.toUpperCase(),
           company_state_code: stateCode,
+          user_type: userType,
           ...ledgerValues,
         }),
       });
@@ -201,6 +203,35 @@ export default function SettingsPage() {
       <h2 className="text-lg font-bold premium-gradient-text">Company Settings</h2>
       <p className="text-sm text-gray-400">These settings are used for all invoices and XML generation.</p>
       <form onSubmit={handleSave} className="premium-card-flat p-6 space-y-4 max-w-2xl">
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block">I am a *</label>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              className={`flex-1 py-3 px-4 rounded-lg border text-sm font-medium transition-all ${
+                userType === "ca_firm"
+                  ? "bg-indigo-500/20 border-indigo-500/50 text-indigo-300"
+                  : "bg-white/5 border-white/10 text-gray-400 hover:border-white/20"
+              }`}
+              onClick={() => setUserType("ca_firm")}
+            >
+              CA Firm
+              <span className="block text-[10px] font-normal mt-0.5 opacity-70">Manage multiple clients</span>
+            </button>
+            <button
+              type="button"
+              className={`flex-1 py-3 px-4 rounded-lg border text-sm font-medium transition-all ${
+                userType === "msme"
+                  ? "bg-green-500/20 border-green-500/50 text-green-300"
+                  : "bg-white/5 border-white/10 text-gray-400 hover:border-white/20"
+              }`}
+              onClick={() => setUserType("msme")}
+            >
+              MSME / Business
+              <span className="block text-[10px] font-normal mt-0.5 opacity-70">My own company</span>
+            </button>
+          </div>
+        </div>
         <div>
           <label className="text-xs text-gray-500 mb-1 block">Company Name (as in Tally) *</label>
           <input className="input w-full" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="e.g. My Firm & Co." />

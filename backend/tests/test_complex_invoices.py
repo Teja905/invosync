@@ -13,10 +13,9 @@ Covers:
 10. Mixed tax rates with discount and rounding
 """
 
-import pytest
 import re
-import json
 from decimal import Decimal
+import sys
 from pathlib import Path
 
 sys_path_inserted = False
@@ -28,10 +27,8 @@ except Exception:
 
 from schemas import StandardizedInvoice, LineItem, TaxEntry, VoucherType, GSTType
 from xml_generator import TallyXmlGenerator, CompanyConfig
-from gst_engine import _compute_gstin_checksum, determine_gst_type, validate_tax_structure
+from gst_engine import _compute_gstin_checksum
 from validation_layer import validate_invoice_for_xml
-from validators.tally_simulator import TallySimulator
-from voucher_classifier import classify_voucher_type
 
 
 # Valid GSTINs for different states (15 chars, proper checksum)

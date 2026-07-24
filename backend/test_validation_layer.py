@@ -8,7 +8,7 @@ from schemas import (
     StandardizedInvoice, VoucherType, GSTType, LineItem, TaxEntry,
 )
 from validation_layer import (
-    validate_invoice_for_xml, validate_xml_output, ValidationResult,
+    validate_invoice_for_xml, validate_xml_output,
 )
 
 

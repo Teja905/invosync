@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 
 const ToastContext = createContext(null);
 
@@ -13,6 +13,7 @@ const ICON = { success: "✓", error: "✕", warning: "⚠", info: "ℹ" };
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
+  const timersRef = useRef(new Set());
 
   const dismiss = useCallback((id) => {
     setToasts((t) => t.filter((x) => x.id !== id));
@@ -21,9 +22,22 @@ export function ToastProvider({ children }) {
   const push = useCallback((kind, message, ttl = 4000) => {
     const id = Date.now() + Math.random();
     setToasts((t) => [...t, { id, kind, message }]);
-    if (ttl) setTimeout(() => dismiss(id), ttl);
+    if (ttl) {
+      const timer = setTimeout(() => {
+        timersRef.current.delete(timer);
+        dismiss(id);
+      }, ttl);
+      timersRef.current.add(timer);
+    }
     return id;
   }, [dismiss]);
+
+  useEffect(() => {
+    return () => {
+      timersRef.current.forEach(clearTimeout);
+      timersRef.current.clear();
+    };
+  }, []);
 
   const api = {
     success: (m) => push("success", m),

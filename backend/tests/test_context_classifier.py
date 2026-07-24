@@ -2,7 +2,6 @@
 
 import pytest
 from context_classifier import ContextClassifier, CAPITAL_AMOUNT_THRESHOLD
-from rules_engine import RulesEngine, MatchType
 
 
 @pytest.fixture

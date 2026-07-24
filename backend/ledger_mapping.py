@@ -20,9 +20,8 @@ from constants.tally_groups import (
     ROLE_TO_EXPECTED_GROUPS,
     COMMON_LEDGER_NAMES,
     UNIVERSAL_LEDGERS,
-    DEFAULT_LEDGERS,
 )
-from rules_engine import RulesEngine, MatchResult
+from rules_engine import RulesEngine
 from context_classifier import ContextClassifier, ContextResult
 
 
@@ -559,12 +558,14 @@ def apply_banking_rules_to_transactions(transactions: list[dict], active_rules: 
         desc = str(tx.get("description", "")).upper()
         deposit = float(tx.get("deposit_amount", 0))
         withdraw = float(tx.get("withdraw_amount", 0))
+        amount = deposit if deposit > 0 else withdraw
         if deposit > 0:
             tx_copy["voucher_type"] = "Receipt"
             tx_copy["target_ledger"] = "Suspense"
         else:
             tx_copy["voucher_type"] = "Payment"
             tx_copy["target_ledger"] = "Suspense"
+        tx_copy["amount"] = amount
         for rule in sorted_rules:
             keyword = str(rule.get("keyword", "")).upper()
             if keyword and keyword in desc:

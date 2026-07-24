@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
@@ -14,12 +15,12 @@ from pydantic import BaseModel, field_validator
 
 import database as db
 import validation as val
-from api.app_state import company_config as _company_config, learner, queue_manager
+from api.app_state import company_config as _company_config, queue_manager
 from api.deps import get_authenticated_user
 from api.helpers import legacy_to_standard as _legacy_to_standard, check_duplicate as _check_dup, resolve_config, mark_masters_created
-from api.models import InvoiceDataLegacy, InvoiceUpdatePayload, LineItemModel
+from api.models import InvoiceDataLegacy, InvoiceUpdatePayload
 from audit_log import audit as audit_logger
-from config.settings import run_validation_pipeline
+from config.settings import run_validation_pipeline, user_config_from_current
 from core.logging import get_logger
 from validation_layer import validate_invoice_for_xml, validate_xml_output
 from api.journal_persist import persist_journal
@@ -30,6 +31,88 @@ logger = get_logger(__name__)
 
 
 # ---- Invoice CRUD ----
+
+
+class ManualEntryRequest(BaseModel):
+    """Manual invoice entry when AI extraction fails or is not desired."""
+    client_id: Optional[str] = None
+    vendor_name: str = ""
+    vendor_gstin: str = ""
+    invoice_number: str = ""
+    invoice_date: str = ""
+    total_amount: float = 0.0
+    total_taxable_value: float = 0.0
+    total_tax: float = 0.0
+    line_items: list[dict] = []
+    voucher_type: str = "Purchase"
+    notes: str = ""
+
+
+@router.post("/invoices/manual")
+async def manual_invoice_entry(
+    req: ManualEntryRequest,
+    current_user: dict = Depends(get_authenticated_user),
+):
+    """Create an invoice manually when AI extraction fails or is not desired.
+
+    This is the safety valve — CAs can always enter data manually if the AI
+    can't read an invoice. The invoice goes through the same validation pipeline
+    as AI-extracted invoices.
+    """
+    user_id = current_user.get("user_id", current_user.get("email", ""))
+
+    if db.invoices is None:
+        raise HTTPException(503, "Database not available")
+
+    # Build extracted data dict in the same format as AI extraction
+    data = {
+        "vendor_name": req.vendor_name,
+        "vendor_gstin": req.vendor_gstin,
+        "invoice_number": req.invoice_number,
+        "invoice_date": req.invoice_date,
+        "total_amount": req.total_amount,
+        "total_taxable_value": req.total_taxable_value or req.total_amount,
+        "total_tax": req.total_tax,
+        "line_items": req.line_items,
+        "voucher_type": req.voucher_type,
+        "confidence": 1.0,  # Manual entry = 100% confidence
+        "_independent_confidence": 1.0,
+        "_provider": "manual",
+        "_model": "manual",
+        "notes": req.notes,
+    }
+
+    # Run validation
+    existing_list = []
+    try:
+        existing_list = await db.list_invoices(user_id=user_id)
+    except Exception:
+        pass
+    validation = val.run_full_validation(data, existing_list)
+
+    # Insert
+    inv_display_id = await db.next_id("invoice_id")
+    inv_id, _ = await db.insert_invoice(
+        user_id=user_id,
+        client_id=req.client_id,
+        extracted=data,
+        validation=validation,
+        file_hash="",
+        storage_key="",
+        display_id=inv_display_id,
+    )
+
+    await audit_logger.log_invoice_action(
+        "manual_entry", inv_display_id, user_id,
+        f"vendor={req.vendor_name} amount={req.total_amount}",
+    )
+
+    return {
+        "ok": True,
+        "id": inv_display_id,
+        "status": "draft",
+        "validation": validation,
+    }
 
 
 @router.get("/invoices")
@@ -57,6 +140,7 @@ async def list_invoices(
             "date": d.get("date", ""),
             "total_amount": d.get("total_amount", 0),
             "confidence": d.get("confidence"),
+            "ind_confidence": d.get("_independent_confidence", d.get("ind_confidence")),
             "document_type": v.get("document_type", "unknown"),
             "decision": dec.get("decision", "unknown"),
             "decision_label": dec.get("label", "Unknown"),
@@ -173,12 +257,12 @@ async def update_invoice(invoice_id: int, data: InvoiceUpdatePayload, current_us
 
 
 @router.get("/invoices/check-duplicate")
-async def check_duplicate_route(vendor: str, invoice_no: str, current_user: dict = Depends(get_authenticated_user)):
-    """Check whether an invoice with the given vendor and number already exists."""
+async def check_duplicate_route(vendor: str, invoice_no: str, date: str = None, current_user: dict = Depends(get_authenticated_user)):
+    """Check whether an invoice with the given vendor and number already exists. Optionally match on date."""
     if db.invoices is None:
         return {"duplicate": False}
     user_id = current_user.get("user_id", current_user.get("email", ""))
-    dup = await db.find_duplicate(vendor, invoice_no, user_id)
+    dup = await db.find_duplicate(vendor, invoice_no, user_id, date=date)
     if dup:
         return {"duplicate": True, "existing_id": dup.get("display_id"), "existing_date": dup.get("created_at")}
     return {"duplicate": False}
@@ -314,15 +398,23 @@ async def confirm_review(invoice_id: int, data: InvoiceUpdatePayload, current_us
         set_fields["xml_generated"] = True
         if pipe_report:
             set_fields["validation_report"] = pipe_report
-        # Persist derived journal lines + chart-of-accounts ledger types.
+        user_id = current_user.get("user_id", current_user.get("email", ""))
         existing = await db.get_invoice(invoice_id)
         client_id = (existing or {}).get("client_id", 0) if existing else 0
         company_id = active_company or user_cfg.get("company_name", user_id)
-        await persist_journal(
-            db, invoice_id, user_id, company_id, client_id, standard, xml_gen, usr_cfg,
-            date_override=(extracted_update.get("date") or "").strip(),
-            voucher_type_override=str(raw.get("voucher_type", "")),
-        )
+        set_fields["status"] = "validated"
+        set_fields["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+        if ledgers:
+            set_fields["item_ledgers"] = ledgers
+        await db.run_in_transaction([
+            lambda s: persist_journal(
+                db, invoice_id, user_id, company_id, client_id, standard, xml_gen, usr_cfg,
+                date_override=(extracted_update.get("date") or "").strip(),
+                voucher_type_override=str(raw.get("voucher_type", "")),
+                session=s,
+            ),
+            lambda s: db.update_invoice(invoice_id, set_fields, session=s),
+        ])
     except Exception as e:
         logger.error("Auto XML generation failed during review confirm: %s", e)
         set_fields["xml_issues"] = [f"Auto XML generation failed: {str(e)}"]
@@ -449,6 +541,9 @@ async def validate_with_fixes(invoice_id: int, current_user: dict = Depends(get_
     if not total or float(total) <= 0:
         blocking.append("Valid total amount is required")
 
+    if not ledger_name or ledger_name == "Purchase":
+        warnings.append(f"Expense ledger is '{ledger_name}' — review if this maps to the correct Tally ledger")
+
     if gstin and len(gstin) != 15:
         suggestions.append(FixSuggestion(
             field="gstin", message=f"GSTIN has {len(gstin)} characters, expected 15",
@@ -506,12 +601,12 @@ async def bulk_generate_xml(body: BulkOperation, current_user: dict = Depends(ge
                 user_cfg, xml_gen, usr_cfg, active_company = resolve_config(current_user)
                 standard = legacy_to_standard(record["extracted"], cfg=usr_cfg, company_config=None)
                 xml_str = xml_gen.generate(standard, company_name=active_company)
-                await db.update_invoice(inv_id, {"xml_generated": True, "xml_content": xml_str})
                 company_id = active_company or user_cfg.get("company_name", user_id)
                 await persist_journal(
                     db, inv_id, user_id, company_id, record.get("client_id", 0),
                     standard, xml_gen, usr_cfg,
                 )
+                await db.update_invoice(inv_id, {"xml_generated": True, "xml_content": xml_str})
                 return {"id": inv_id, "status": "generated"}
             except Exception as e:
                 return {"id": inv_id, "status": "error", "error": str(e)}
@@ -565,6 +660,89 @@ async def bulk_delete(body: BulkOperation, current_user: dict = Depends(get_auth
     return {"deleted": deleted, "total": len(body.invoice_ids)}
 
 
+@router.post("/api/v3/invoices/bulk/confirm-review")
+async def bulk_confirm_review(body: BulkOperation, current_user: dict = Depends(get_authenticated_user)):
+    """Confirm review for multiple draft invoices at once (validates basic fields, generates XML)."""
+    if db.invoices is None:
+        raise HTTPException(503, "Database not available")
+    user_id = current_user.get("user_id", current_user.get("email", ""))
+    sem = asyncio.Semaphore(5)
+
+    async def _confirm_one(inv_id):
+        async with sem:
+            record = await db.get_invoice(inv_id)
+            if not record or record.get("user_id") != user_id:
+                return {"id": inv_id, "status": "error", "error": "Not found or access denied"}
+            if record.get("status") != "draft":
+                return {"id": inv_id, "status": "skipped", "reason": f"Status is '{record.get('status')}'"}
+
+            ext = record.get("extracted", {})
+            errors = []
+            if not ext.get("vendor_name", "").strip():
+                errors.append("Vendor name missing")
+            if not ext.get("invoice_number", "").strip():
+                errors.append("Invoice number missing")
+            if not ext.get("date"):
+                errors.append("Date missing")
+            if not ext.get("total_amount") or float(ext.get("total_amount", 0) or 0) <= 0:
+                errors.append("Total amount missing or zero")
+            if not ext.get("line_items"):
+                errors.append("No line items")
+
+            if errors:
+                return {"id": inv_id, "status": "validation_failed", "errors": errors}
+
+            try:
+                user_cfg, xml_gen, usr_cfg, active_company = resolve_config(current_user)
+                standard = _legacy_to_standard(ext, cfg=usr_cfg, company_config=_company_config)
+                xml_str = xml_gen.generate(standard, company_name=active_company)
+                if not xml_gen.masters_created:
+                    xml_gen.masters_created = True
+                    mark_masters_created(user_cfg, user_id)
+                xml_validation = validate_xml_output(xml_str)
+
+                set_fields = {
+                    "extracted": ext,
+                    "xml_issues": xml_validation.errors if xml_validation else [],
+                    "status": "validated",
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                await db.update_invoice(inv_id, set_fields)
+
+                client_id = record.get("client_id", 0)
+                company_id = active_company or user_cfg.get("company_name", user_id)
+                await persist_journal(
+                    db, inv_id, user_id, company_id, client_id, standard, xml_gen, usr_cfg,
+                    date_override=(ext.get("date") or "").strip(),
+                    voucher_type_override=str(ext.get("voucher_type", "")),
+                )
+
+                await db.update_invoice(inv_id, {
+                    "xml_content": xml_str,
+                    "xml_generated": True,
+                })
+
+                await audit_logger.log_invoice_action(
+                    "confirm_review", inv_id, user_id, "bulk_confirm_review",
+                    snapshot={"status": "draft", "xml_content": None, "xml_generated": False},
+                )
+                return {"id": inv_id, "status": "confirmed"}
+            except Exception as e:
+                return {"id": inv_id, "status": "error", "error": str(e)}
+
+    results = await asyncio.gather(*[_confirm_one(i) for i in body.invoice_ids])
+    confirmed = sum(1 for r in results if r["status"] == "confirmed")
+    failed = sum(1 for r in results if r["status"] == "validation_failed" or r["status"] == "error")
+    skipped = sum(1 for r in results if r["status"] == "skipped")
+    return {
+        "results": results,
+        "total": len(body.invoice_ids),
+        "confirmed": confirmed,
+        "failed": failed,
+        "skipped": skipped,
+    }
+
+
 # ---- Audit History ----
 
 @router.get("/invoices/{invoice_id}/audit")
@@ -612,7 +790,7 @@ async def undo_invoice_action(invoice_id: int, current_user: dict = Depends(get_
         await db.update_invoice(invoice_id, updates)
         await db.set_journal_line_reversed(str(invoice_id), True)
         await audit_logger.log_invoice_action("undo", invoice_id, user_id,
-                                              f"reverted confirm_review (->draft)")
+                                              "reverted confirm_review (->draft)")
         return {"ok": True, "message": "Review undone, invoice back to draft", "status": "draft"}
 
     elif action == "generate_xml":
@@ -622,7 +800,7 @@ async def undo_invoice_action(invoice_id: int, current_user: dict = Depends(get_
         await db.update_invoice(invoice_id, updates)
         await db.set_journal_line_reversed(str(invoice_id), True)
         await audit_logger.log_invoice_action("undo", invoice_id, user_id,
-                                              f"reverted generate_xml (xml cleared)")
+                                              "reverted generate_xml (xml cleared)")
         return {"ok": True, "message": "XML generation undone", "xml_generated": False}
 
     elif action == "sync":
@@ -631,7 +809,7 @@ async def undo_invoice_action(invoice_id: int, current_user: dict = Depends(get_
         updates["sync_error"] = None
         await db.update_invoice(invoice_id, updates)
         await audit_logger.log_invoice_action("undo", invoice_id, user_id,
-                                              f"reverted sync (->validated)")
+                                              "reverted sync (->validated)")
         return {"ok": True, "message": "Sync undone, invoice back to validated", "status": "validated"}
 
     else:
@@ -659,7 +837,7 @@ async def generate_xml_for(
         validation_result = validate_invoice_for_xml(standard)
 
         user_id = current_user.get("user_id", current_user.get("email", ""))
-        dup_msg = await _check_dup(standard.vendor_name, standard.invoice_number, standard.total_amount, user_id)
+        dup_msg = await _check_dup(standard.vendor_name, standard.invoice_number, standard.total_amount, user_id, date=standard.invoice_date)
         if dup_msg:
             validation_result.add_warning(dup_msg)
 
@@ -750,22 +928,23 @@ async def generate_from_stored(
             return {"valid": False, "soft_errors": validation_result.soft_errors, "validation": validation_result.to_dict()}
 
         xml_str = xml_gen.generate(standard, company_name=active_company)
+        user_id = current_user.get("user_id", current_user.get("email", ""))
         if not xml_gen.masters_created:
             xml_gen.masters_created = True
-            mark_masters_created(user_cfg, current_user.get("user_id", "default"))
+            mark_masters_created(user_cfg, user_id)
         xml_validation = validate_xml_output(xml_str)
         old_validation = val.run_full_validation(data, [])
         pipe_report = run_validation_pipeline(standard, xml_str)
 
-        await db.update_invoice(invoice_id, {
-            "xml_generated": True, "xml_content": xml_str,
-            "xml_issues": xml_validation.errors, "v3_validation": validation_result.to_dict(),
-        })
         company_id = active_company or user_cfg.get("company_name", user_id)
         await persist_journal(
             db, invoice_id, user_id, company_id, record.get("client_id", 0),
             standard, xml_gen, usr_cfg,
         )
+        await db.update_invoice(invoice_id, {
+            "xml_generated": True, "xml_content": xml_str,
+            "xml_issues": xml_validation.errors, "v3_validation": validation_result.to_dict(),
+        })
         await audit_logger.log_invoice_action(
             "generate_xml", invoice_id, current_user.get("user_id", current_user.get("email", "")),
             details=f"generate_from_stored force={force}",
@@ -903,3 +1082,116 @@ async def invoice_progress(invoice_id: str, current_user: dict = Depends(get_aut
         return progress
 
     return {"step": "unknown", "percent": 0, "message": "Database not available", "status": "unknown"}
+
+
+# ---- Error Recovery: Retry + Manual Entry ----
+
+
+@router.post("/api/v3/invoices/{invoice_id}/retry-extraction")
+async def retry_extraction(invoice_id: int, current_user: dict = Depends(get_authenticated_user)):
+    """Retry extraction for a failed invoice. Tries fallback provider automatically."""
+    if db.invoices is None:
+        raise HTTPException(503, "Database not available")
+    record = await db.get_invoice(invoice_id)
+    if not record:
+        raise HTTPException(404, "Invoice not found")
+    user_id = current_user.get("user_id", current_user.get("email", ""))
+    if record.get("user_id") != user_id:
+        raise HTTPException(403, "Access denied")
+
+    tmp_path = record.get("tmp_path")
+    if not tmp_path or not os.path.exists(tmp_path):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "message": "Original file no longer available for retry. Upload again."},
+        )
+
+    from background.models import ExtractionJob
+    from pathlib import Path as _Path
+
+    user_config = user_config_from_current(current_user)
+    company_gstin = user_config.get("company_gstin") or os.getenv("COMPANY_GSTIN", "")
+
+    # Reset circuit breakers so fallback provider gets a clean chance
+    try:
+        from api.app_state import extraction_pipeline as _ep
+        last_provider = record.get("extracted", {}).get("_provider", "")
+        if last_provider == "openrouter":
+            _ep._circuits["gemini"].reset() if hasattr(_ep._circuits.get("gemini"), "reset") else None
+        elif last_provider == "gemini":
+            _ep._circuits["openrouter"].reset() if hasattr(_ep._circuits.get("openrouter"), "reset") else None
+        else:
+            for cb in _ep._circuits.values():
+                if hasattr(cb, "reset"):
+                    cb.reset()
+    except Exception:
+        pass
+
+    await db.update_invoice(invoice_id, {"status": "processing_queued", "processing_state": "queued"})
+
+    job = ExtractionJob(
+        invoice_id=record["_id"],
+        tmp_path=_Path(tmp_path),
+        file_content_type=record.get("file_content_type", "image/jpeg"),
+        user_id=user_id,
+        client_id=record.get("client_id", 0),
+        company_gstin=company_gstin,
+        user_config=user_config,
+    )
+    await queue_manager.submit(job)
+    return {"ok": True, "message": "Re-queued for extraction (will try fallback provider)", "status": "processing_queued"}
+
+
+class ManualEntryPayload(BaseModel):
+    vendor_name: str = ""
+    invoice_number: str = ""
+    date: str = ""
+    total_amount: float = 0.0
+    gstin: str = ""
+    buyer_gstin: str = ""
+    buyer_name: str = ""
+    voucher_type: str = "Purchase"
+    line_items: list[dict] = []
+
+
+@router.post("/api/v3/invoices/{invoice_id}/manual-entry")
+async def manual_entry(invoice_id: int, body: ManualEntryPayload, current_user: dict = Depends(get_authenticated_user)):
+    """Manually enter invoice data when extraction fails (bypasses AI entirely)."""
+    if db.invoices is None:
+        raise HTTPException(503, "Database not available")
+    record = await db.get_invoice(invoice_id)
+    if not record:
+        raise HTTPException(404, "Invoice not found")
+    user_id = current_user.get("user_id", current_user.get("email", ""))
+    if record.get("user_id") != user_id:
+        raise HTTPException(403, "Access denied")
+
+    raw = body.model_dump()
+    extracted = {
+        "vendor_name": raw.get("vendor_name", ""),
+        "invoice_number": raw.get("invoice_number", ""),
+        "date": raw.get("date", ""),
+        "total_amount": raw.get("total_amount", 0),
+        "gstin": raw.get("gstin", ""),
+        "buyer_gstin": raw.get("buyer_gstin", ""),
+        "buyer_name": raw.get("buyer_name", ""),
+        "voucher_type": raw.get("voucher_type", "Purchase"),
+        "line_items": raw.get("line_items", []),
+        "_provider": "manual",
+        "_model": "manual_entry",
+        "confidence": 1.0,
+    }
+
+    set_fields = {
+        "extracted": extracted,
+        "status": "draft",
+        "processing_state": "completed",
+    }
+    await db.update_invoice(invoice_id, set_fields)
+
+    await audit_logger.log_invoice_action(
+        "manual_entry", invoice_id, user_id, "error_recovery",
+        snapshot={"status": record.get("status", "unknown"), "processing_state": record.get("processing_state")},
+    )
+
+    return {"ok": True, "message": "Data saved. Invoice is now in draft status.", "status": "draft"}

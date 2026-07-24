@@ -1,10 +1,9 @@
 """GST engine statutory tests: GSTIN validation, rate validation, tax computation."""
 
-import pytest
 from gst_engine import (
     validate_gstin, validate_tax_rate, compute_gst_entries, compute_tax_from_items,
-    determine_gst_type, _compute_gstin_checksum, _verify_gstin_checksum,
-    aggregate_and_round_slab_taxes, ALLOWED_GST_SLABS,
+    _compute_gstin_checksum, _verify_gstin_checksum,
+    aggregate_and_round_slab_taxes,
 )
 from schemas import GSTType, GST_STATE_CODES
 

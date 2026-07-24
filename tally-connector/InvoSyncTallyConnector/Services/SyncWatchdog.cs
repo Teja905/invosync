@@ -26,21 +26,21 @@ public class SyncWatchdog
 
     public void RecordActivity() => _lastActivity = DateTime.UtcNow;
 
-    public async Task<bool> TryStartSync()
+    public async Task<bool> TryStartAsync()
     {
         if (!await _syncLock.WaitAsync(0))
         {
             _log.LogInformation("Sync already in progress. Skipping.");
             return false;
         }
-        try
-        {
-            return true;
-        }
-        finally
-        {
-            _syncLock.Release();
-        }
+        RecordActivity();
+        return true;
+    }
+
+    public void CompleteSync()
+    {
+        RecordActivity();
+        _syncLock.Release();
     }
 
     private void Check(object? state)

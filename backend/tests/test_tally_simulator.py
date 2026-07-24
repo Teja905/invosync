@@ -1,6 +1,6 @@
 """Test TallySimulator — pre-flight checks that catch Tally import failures."""
 
-import sys, os
+import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

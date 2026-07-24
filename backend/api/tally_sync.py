@@ -2,17 +2,15 @@
 
 import os
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import database as db
-from api.app_state import company_config as _company_config, tally_sync_manager
+from api.app_state import tally_sync_manager
 from api.deps import get_authenticated_user
 from audit_log import audit as audit_logger
-from config.settings import user_config_from_current, make_xml_generator, run_validation_pipeline, config_overrides
+from config.settings import user_config_from_current, config_overrides
 from core.logging import get_logger
 from core.metrics import metrics
 from diagnostics import PreFlightDiagnostics
@@ -111,6 +109,12 @@ def _require_production_checks(invoice_data: dict, user_id: str) -> dict:
         checks.append({"check": "invoice_date", "passed": False, "message": "Invoice date is required"})
     else:
         checks.append({"check": "invoice_date", "passed": True, "message": f"Date: {invoice_date}"})
+
+    valid_voucher_types = {"Purchase", "Sales", "Payment", "Receipt", "Journal", "Credit Note", "Debit Note"}
+    if voucher_type not in valid_voucher_types:
+        checks.append({"check": "voucher_type", "passed": False, "message": f"Invalid voucher type '{voucher_type}' — must be one of {valid_voucher_types}"})
+    else:
+        checks.append({"check": "voucher_type", "passed": True, "message": f"Voucher type: {voucher_type}"})
 
     failed = [c for c in checks if not c.get("passed")]
     if failed:
@@ -281,7 +285,7 @@ async def bulk_map_ledgers_before_sync(payload: BulkLedgerMapPayload, current_us
 @router.get("/api/v3/sync/pending")
 async def sync_pending(
     current_user: dict = Depends(get_authenticated_user),
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, le=500),
 ):
     user_id = current_user.get("user_id", current_user.get("email", ""))
     pending = await db.list_pending_sync(user_id=user_id, limit=limit)
@@ -439,7 +443,7 @@ async def trigger_invoice_sync(display_id: int, current_user: dict = Depends(get
 
 
 @router.get("/api/v3/invoices/pending-tally-push")
-async def pending_tally_push(current_user: dict = Depends(get_authenticated_user), limit: int = Query(50, le=200)):
+async def pending_tally_push(current_user: dict = Depends(get_authenticated_user), limit: int = Query(50, le=500)):
     user_id = current_user.get("user_id", current_user.get("email", ""))
     pending = await db.list_pending_sync(user_id=user_id, limit=limit)
     return {
@@ -807,11 +811,6 @@ async def apply_master_edits(
 
     # Now create the masters with edited values (reuse logic)
     masters = [MissingMasterPayload(type=e.type, name=e.name, parent=e.parent) for e in request.edits]
-    create_req = AutoCreateMastersRequest(
-        invoice_id=request.invoice_id,
-        company_name=request.company_name,
-        masters=masters,
-    )
     # Build XML
     from constants.tally_groups import EscapeXmlForTally
 
@@ -860,11 +859,7 @@ async def auto_create_masters(
     masters before the voucher on its next poll cycle.
 
     Returns the generated XML + whether each master was accepted."""
-    from ledger_mapping import LedgerDiscoveryEngine
     from constants.tally_groups import EscapeXmlForTally
-
-    engine = LedgerDiscoveryEngine()
-    user_id = current_user.get("user_id", current_user.get("email", ""))
 
     # Build the multi-master XML
     # Groups first, then ledgers (Tally requires parent objects to exist first)
@@ -996,11 +991,15 @@ async def sync_check_duplicate(body: dict, current_user: dict = Depends(get_auth
 
     existing = await db.invoices.find_one(query)
     if existing:
+        existing_amt = float(existing.get("extracted", {}).get("total_amount", 0) or 0)
+        amount_match = total_amount > 0 and existing_amt > 0 and abs(total_amount - existing_amt) < 0.01
         return {
             "duplicate": True,
             "invoice_id": existing.get("display_id"),
             "status": existing.get("status"),
-            "message": f"Invoice #{invoice_number} from {vendor_name} already exists (ID: {existing.get('display_id')}, status: {existing.get('status')})",
+            "amount_match": amount_match,
+            "existing_amount": existing_amt,
+            "message": f"Invoice #{invoice_number} from {vendor_name} already exists (ID: {existing.get('display_id')}, status: {existing.get('status')}, amount_match: {amount_match})",
         }
 
     return {"duplicate": False, "message": "No duplicate found"}

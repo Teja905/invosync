@@ -1,6 +1,5 @@
 """XMLValidator — structural XML checks, golden file comparison, and Tally compatibility."""
 
-import os
 import re
 from pathlib import Path
 from typing import Optional

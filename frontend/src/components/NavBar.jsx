@@ -42,6 +42,9 @@ export default function NavBar({ tallyStatus }) {
           <Link to="/clients" className={`premium-tab ${isActive("/clients") ? "active" : ""}`}>
             Clients
           </Link>
+          <Link to="/firm" className={`premium-tab ${isActive("/firm") ? "active" : ""}`}>
+            Firm
+          </Link>
           <div className="relative group">
             <button className={`premium-tab ${isActive("/reports") ? "active" : ""}`}>
               Reports
@@ -56,8 +59,11 @@ export default function NavBar({ tallyStatus }) {
               <Link to="/reports/pnl" className="block px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white">
                 Profit & Loss
               </Link>
-              <Link to="/reports/balance-sheet" className="block px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white rounded-b-lg">
+              <Link to="/reports/balance-sheet" className="block px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white">
                 Balance Sheet
+              </Link>
+              <Link to="/reports/diff" className="block px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white">
+                Diff View
               </Link>
             </div>
           </div>
